@@ -1,0 +1,5 @@
+{
+  "name": "Work Intelligence Tracker",
+  "description": "AI-powered work tracker with real-time database access, automated reporting, and conversational agent.",
+  "requestFramePermissions": []
+}
