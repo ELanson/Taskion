@@ -150,6 +150,12 @@ export async function chatWithLocalModel(
         }
 
         const data = await response.json();
+
+        if (!data || !data.choices || data.choices.length === 0) {
+            console.error('Invalid response from Local Model API:', data);
+            throw new Error(`Local model returned an invalid response. Check if a model is loaded at your server URL.`);
+        }
+
         const assistantMessage = data.choices[0].message;
 
         if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
@@ -222,6 +228,12 @@ export async function chatWithLocalModel(
             }
 
             const finalData = await finalResponse.json();
+
+            if (!finalData || !finalData.choices || finalData.choices.length === 0) {
+                console.error('Invalid response from Local Model API (2nd pass):', finalData);
+                throw new Error(`Local model returned an invalid response during the second pass.`);
+            }
+
             return finalData.choices[0].message.content;
         }
 
