@@ -34,6 +34,7 @@ export interface Project {
     name: string;
     description: string;
     status: string;
+    created_at?: string;
 }
 
 export interface Message {
@@ -126,6 +127,13 @@ export interface WorkspaceSettings {
     cloudAiModel: 'gemini-2.5-pro' | 'gemini-1.5-flash';
 }
 
+export interface Notification {
+    id: string;
+    type: 'success' | 'error' | 'warning' | 'info';
+    message: string;
+    timestamp: number;
+}
+
 interface AppState {
     // Global Data
     tasks: Task[];
@@ -135,6 +143,7 @@ interface AppState {
     allProfiles: any[];
     totalHours: number;
     messages: Message[];
+    aiActionLogs: any[];
 
     // UI State
     input: string;
@@ -167,6 +176,7 @@ interface AppState {
     localModelUrl: string;
     editingTask: Task | null;
     editingProject: Project | null;
+    selectedProjectIds: number[];
     selectedTaskIdForTimeLog: number | null;
 
     // Forms
@@ -211,6 +221,12 @@ interface AppState {
     activeMainChatId: string | null;
     activeSupportChatId: string | null;
     isChatHistoryOpen: boolean;
+    isTeamModalOpen: boolean;
+
+    // Notifications
+    notifications: Notification[];
+    addNotification: (n: Omit<Notification, 'id' | 'timestamp'>) => void;
+    removeNotification: (id: string) => void;
 
     // Pomodoro Timer
     pomodoroState: {
@@ -248,9 +264,14 @@ interface AppState {
     setIsTimeLogModalOpen: (isOpen: boolean) => void;
     setIsSettingsModalOpen: (isOpen: boolean) => void;
     setIsWorkspaceSettingsModalOpen: (isOpen: boolean) => void;
+    toggleProjectSelection: (id: number) => void;
+    clearProjectSelection: () => void;
+    deleteProject: (id: number) => Promise<void>;
+    bulkDeleteProjects: (ids: number[]) => Promise<void>;
     setIsReportBuilderOpen: (isOpen: boolean) => void;
     setActiveReportTemplate: (template: string | null) => void;
     setGeneratedReportData: (data: any | null) => void;
+    setIsTeamModalOpen: (isOpen: boolean) => void;
     generateReport: (config: {
         template: string;
         scope: string;
@@ -278,6 +299,9 @@ interface AppState {
     fetchSupportTickets: () => Promise<void>;
     fetchFeedbackItems: () => Promise<void>;
     addSupportTicket: (ticket: Omit<SupportTicket, 'id' | 'createdAt'>) => Promise<void>;
+    updateLastActive: () => Promise<void>;
+    sendPoke: (toUserId: string) => Promise<void>;
+    subscribeToPokes: () => (() => void) | void;
     updateTicketStatus: (id: string, status: SupportTicket['status']) => Promise<void>;
     voteFeedback: (id: string, userId: string) => Promise<void>;
     addFeedbackItem: (item: Omit<FeedbackItem, 'id' | 'votes' | 'userVoted'>) => Promise<void>;
@@ -379,6 +403,7 @@ export const useAppStore = create<AppState>()(
                 cloudAiModel: 'gemini-2.5-pro'
             },
             isDarkMode: true,
+            isTeamModalOpen: false,
             userProfile: {
                 name: 'Guest User',
                 avatar_url: null
@@ -390,6 +415,8 @@ export const useAppStore = create<AppState>()(
             localModelUrl: 'https://tea.rickelindustries.co.ke/',
             editingTask: null,
             editingProject: null,
+            selectedProjectIds: [],
+            aiActionLogs: [],
             selectedTaskIdForTimeLog: null,
             // Chat History
             mainChatSessions: [],
@@ -397,6 +424,17 @@ export const useAppStore = create<AppState>()(
             activeMainChatId: null,
             activeSupportChatId: null,
             isChatHistoryOpen: false,
+
+            notifications: [],
+            addNotification: (n) => set((state) => ({
+                notifications: [
+                    ...state.notifications,
+                    { ...n, id: Math.random().toString(36).substring(7), timestamp: Date.now() }
+                ]
+            })),
+            removeNotification: (id) => set((state) => ({
+                notifications: state.notifications.filter((n) => n.id !== id)
+            })),
 
             formData: {
                 title: '',
@@ -483,6 +521,7 @@ export const useAppStore = create<AppState>()(
             setIsReportBuilderOpen: (isReportBuilderOpen) => set({ isReportBuilderOpen }),
             setActiveReportTemplate: (activeReportTemplate) => set({ activeReportTemplate }),
             setGeneratedReportData: (generatedReportData) => set({ generatedReportData }),
+            setIsTeamModalOpen: (isTeamModalOpen) => set({ isTeamModalOpen }),
             generateReport: async (config) => {
                 set({ isGeneratingReport: true });
                 try {
@@ -714,12 +753,13 @@ export const useAppStore = create<AppState>()(
                         }
                     });
 
-                    const [tasksRes, projectsRes, metricsRes, deptsRes, teamsRes] = await Promise.all([
+                    const [tasksRes, projectsRes, metricsRes, deptsRes, teamsRes, logsRes] = await Promise.all([
                         supabase.from('tasks').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
                         supabase.from('projects').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
                         supabase.from('time_logs').select('*'),
                         supabase.from('departments').select('*').order('name'),
-                        supabase.from('teams').select('*, members:team_members(*)').order('name')
+                        supabase.from('teams').select('*, members:team_members(*)').order('name'),
+                        supabase.from('ai_action_logs').select('*').order('timestamp', { ascending: false }).limit(20)
                     ]);
 
                     if (tasksRes.error) throw tasksRes.error;
@@ -756,6 +796,7 @@ export const useAppStore = create<AppState>()(
                         tasks: tasksData as Task[],
                         projects: projectsData as Project[],
                         timeLogs: timeLogs as any[],
+                        aiActionLogs: logsRes.data || [],
                         totalHours: totalHours
                     });
 
@@ -1130,6 +1171,78 @@ export const useAppStore = create<AppState>()(
                     get().fetchData();
                 }
                 return { error };
+            },
+
+            toggleProjectSelection: (id) => set(state => ({
+                selectedProjectIds: state.selectedProjectIds.includes(id)
+                    ? state.selectedProjectIds.filter(pid => pid !== id)
+                    : [...state.selectedProjectIds, id]
+            })),
+
+            clearProjectSelection: () => set({ selectedProjectIds: [] }),
+
+            deleteProject: async (id) => {
+                const { error } = await supabase.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+                if (!error) {
+                    set(state => ({
+                        projects: state.projects.filter(p => p.id !== id),
+                        selectedProjectIds: state.selectedProjectIds.filter(pid => pid !== id)
+                    }));
+                }
+            },
+
+            bulkDeleteProjects: async (ids) => {
+                const { error } = await supabase.from('projects').update({ deleted_at: new Date().toISOString() }).in('id', ids);
+                if (!error) {
+                    set(state => ({
+                        projects: state.projects.filter(p => !ids.includes(p.id)),
+                        selectedProjectIds: []
+                    }));
+                }
+            },
+
+            updateLastActive: async () => {
+                const uid = get().user?.id;
+                if (!uid) return;
+                await supabase.from('profiles').update({ last_active_at: new Date().toISOString() }).eq('id', uid);
+            },
+
+            sendPoke: async (toUserId) => {
+                const fromId = get().user?.id;
+                if (!fromId) return;
+                const toProfile = get().allProfiles.find(p => p.id === toUserId);
+                const toName = toProfile?.full_name || 'Member';
+                const { error } = await supabase.from('pokes').insert([{ from_id: fromId, to_id: toUserId }]);
+                if (error) {
+                    get().addNotification({ type: 'error', message: "Failed to send buzz." });
+                } else {
+                    get().addNotification({ type: 'success', message: `Buzz sent to ${toName}!` });
+                }
+            },
+
+            subscribeToPokes: () => {
+                const uid = get().user?.id;
+                if (!uid) return;
+
+                const subscription = supabase
+                    .channel('pokes')
+                    .on('postgres_changes', {
+                        event: 'INSERT',
+                        schema: 'public',
+                        table: 'pokes',
+                        filter: `to_id=eq.${uid}`
+                    }, (payload: any) => {
+                        const fromProfile = get().allProfiles.find(p => p.id === payload.new.from_id);
+                        get().addNotification({
+                            type: 'info',
+                            message: `${fromProfile?.full_name || 'Someone'} buzzed you! "Hey i am onlin and active come join"`
+                        });
+                    })
+                    .subscribe();
+
+                return () => {
+                    supabase.removeChannel(subscription);
+                };
             }
         }),
         {

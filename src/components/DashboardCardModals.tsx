@@ -2,7 +2,8 @@ import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     X, Clock, CheckCircle2, Activity, Target, Flame,
-    TrendingUp, Calendar, AlertCircle, Zap, Award, BarChart2
+    TrendingUp, Calendar, AlertCircle, Zap, Award, BarChart2,
+    ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 
@@ -49,7 +50,13 @@ const ModalShell: React.FC<{
 };
 
 // ─── Modal 1: Total Time ─────────────────────────────────────────────────────
-export const TotalTimeModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+interface TotalTimeModalProps {
+    onClose: () => void;
+    timeToday?: number;
+    avgDailyTime?: number;
+}
+
+export function TotalTimeModal({ onClose, timeToday = 0, avgDailyTime = 0 }: TotalTimeModalProps) {
     const { isDarkMode, totalHours } = useAppStore();
     const dk = isDarkMode;
     const weekData = [
@@ -57,6 +64,8 @@ export const TotalTimeModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
         { day: 'Thu', hours: 7.8 }, { day: 'Fri', hours: 4.3 }, { day: 'Sat', hours: 2.1 }, { day: 'Sun', hours: totalHours },
     ];
     const maxH = Math.max(...weekData.map(d => d.hours));
+    const trend = avgDailyTime > 0 ? ((timeToday - avgDailyTime) / avgDailyTime) * 100 : 0;
+    const isPositive = trend >= 0;
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -106,8 +115,14 @@ export const TotalTimeModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
 };
 
 // ─── Modal 2: Tasks Completed ────────────────────────────────────────────────
-export const TasksCompletedModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-    const { isDarkMode, tasks } = useAppStore();
+interface TasksCompletedModalProps {
+    onClose: () => void;
+    completedYesterday?: number;
+}
+
+export function TasksCompletedModal({ onClose, completedYesterday = 0 }: TasksCompletedModalProps) {
+    const isDarkMode = useAppStore(state => state.isDarkMode);
+    const tasks = useAppStore(state => state.tasks);
     const dk = isDarkMode;
     const safeTasks = Array.isArray(tasks) ? tasks : [];
     const completed = safeTasks.filter(t => t.status === 'done');
@@ -137,9 +152,11 @@ export const TasksCompletedModal: React.FC<{ onClose: () => void }> = ({ onClose
                         </div>
                     </div>
                     <div>
-                        <p className={`text-3xl font-black ${dk ? 'text-white' : 'text-gray-900'}`}>{completed.length}</p>
+                        <p className={`text-4xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-1`}>{completed.length}</p>
                         <p className="text-xs text-gray-500">of {total} tasks done</p>
-                        <span className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full mt-1 inline-block">+2 from yesterday</span>
+                        <span className={`text-[10px] font-bold ${completedYesterday > 0 ? 'text-emerald-500 bg-emerald-500/10' : 'text-gray-500 bg-gray-500/10'} px-1.5 py-0.5 rounded-full mt-1 inline-block`}>
+                            {completedYesterday > 0 ? `+${completedYesterday}` : '0'} from yesterday
+                        </span>
                     </div>
                 </div>
 

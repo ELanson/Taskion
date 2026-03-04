@@ -83,7 +83,14 @@ You CAN — and MUST — do all of the following using the provided tools. Never
 
 ## STYLE
 - Be professional, warm, concise. Confirm what you did. Don't ask for permission on non-destructive actions.
-- Never reveal internal tool calls, UUIDs, or raw JSON to the user.`;
+- Never reveal internal tool calls, UUIDs, or raw JSON to the user.
+- [DOCUMENT INTELLIGENCE]: When a user uploads a document (PDF, Excel, Word, Image):
+    1. Analyze the content deeply based on the user's query.
+    2. If the document contains a list of tasks, action items, or a table of work:
+       - DO NOT just list them. Proactively extract them.
+       - FOR EACH task found, call the \`create_task\` tool. 
+       - If some fields are missing (like project), use the defaults specified in the TASK CREATION RULES.
+       - Summarize what you created in your final response.`;
 
 const toolDeclarations = [
     {
@@ -250,7 +257,7 @@ export default async function handler(req: any, res: any) {
     }
 
     try {
-        const { message, history, systemPrompt: customSystemPrompt, userId: rawUserId, userRole } = req.body;
+        const { message, history, systemPrompt: customSystemPrompt, userId: rawUserId, userRole, fileData, mimeType } = req.body;
         const userId = rawUserId || 'anonymous';
         fileLog(`[API] Start Request - userId: ${userId}, message: "${message?.slice(0, 50)}..."`);
         console.log(`[API] Received request from userId: ${userId}, message: "${message?.slice(0, 50)}..."`);
@@ -282,7 +289,17 @@ export default async function handler(req: any, res: any) {
                 else if (msg.role === 'assistant' || msg.role === 'model') contents.push({ role: 'model', parts: [{ text: msg.content }] });
             }
         }
-        contents.push({ role: 'user', parts: [{ text: message }] });
+
+        const userParts: any[] = [{ text: message }];
+        if (fileData && mimeType) {
+            userParts.push({
+                inlineData: {
+                    data: fileData,
+                    mimeType: mimeType
+                }
+            });
+        }
+        contents.push({ role: 'user', parts: userParts });
 
         // Multi-turn tool execution loop
         const vertexAI = getVertexAI();

@@ -76,6 +76,7 @@ import { PomodoroWidget } from './components/PomodoroWidget';
 import { ChatHistoryDrawer } from './components/ChatHistoryDrawer';
 import { FocusModeModal } from './components/FocusModeModal';
 import { EisenhowerMatrix } from './components/EisenhowerMatrix';
+import { NotificationToast } from './components/NotificationToast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -94,6 +95,7 @@ export default function App() {
     isModalOpen, setIsModalOpen,
     isProjectModalOpen, setIsProjectModalOpen,
     isTimeLogModalOpen, setIsTimeLogModalOpen,
+    isTeamModalOpen, setIsTeamModalOpen,
     editingTask,
     editingProject, setEditingProject,
     selectedTaskIdForTimeLog, setSelectedTaskIdForTimeLog,
@@ -113,11 +115,69 @@ export default function App() {
     isSidebarOpen, setIsSidebarOpen,
     inviteUser, resetUserPassword, toggleUserAdmin,
     initializeAuth, signOut,
+    timeLogs, workspaceSettings, setIsReportBuilderOpen, setActiveReportTemplate,
+    selectedProjectIds, toggleProjectSelection, clearProjectSelection, deleteProject, bulkDeleteProjects,
+    aiActionLogs,
     fetchData, saveChatSession,
-    mainChatSessions, activeMainChatId, isChatHistoryOpen, setIsChatHistoryOpen, createNewChatSession, loadChatSession,
-    deleteChatSession, renameChatSession, deleteAllChatSessions,
-    timeLogs, workspaceSettings, setIsReportBuilderOpen, setActiveReportTemplate
+    setIsChatHistoryOpen, isChatHistoryOpen, createNewChatSession,
+    mainChatSessions, activeMainChatId, loadChatSession,
+    renameChatSession, deleteChatSession, deleteAllChatSessions,
+    addNotification,
+    updateLastActive,
+    sendPoke,
+    subscribeToPokes,
+    departments
   } = useAppStore();
+
+  // Team Collaboration Logic
+  useEffect(() => {
+    if (!user) return;
+
+    // Heartbeat every 2 minutes
+    updateLastActive();
+    const heartbeat = setInterval(updateLastActive, 2 * 60 * 1000);
+
+    // Subscribe to pokes (buzzes)
+    const unsubscribePokes = subscribeToPokes();
+
+    return () => {
+      clearInterval(heartbeat);
+      if (unsubscribePokes) unsubscribePokes?.();
+    };
+  }, [user, updateLastActive, subscribeToPokes]);
+
+  // Derived state: Members of the same team
+  const myTeamMembers = useMemo(() => {
+    if (!user || !departments || departments.length === 0) return [];
+
+    // Find the current user's team ID
+    let myTeamId: string | null = null;
+    for (const dept of departments) {
+      if (!dept.teams) continue;
+      for (const team of dept.teams) {
+        if ((team.members || []).some(m => m.user_id === user.id)) {
+          myTeamId = team.id;
+          break;
+        }
+      }
+      if (myTeamId) break;
+    }
+
+    if (!myTeamId) return [];
+
+    // Get all profiles that are members of that team (excluding self)
+    return allProfiles.filter(profile => {
+      if (profile.id === user.id) return false;
+      for (const dept of departments) {
+        if (!dept.teams) continue;
+        const team = dept.teams.find(t => t.id === myTeamId);
+        if (team && (team.members || []).some(m => m.user_id === profile.id)) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }, [user, departments, allProfiles]);
 
   const { focusScore, focusLabel, streakCount, streakDaysUI } = useMemo(() => {
     if (!timeLogs || !tasks) return { focusScore: 0, focusLabel: 'Need more data', streakCount: 0, streakDaysUI: [] };
@@ -181,16 +241,116 @@ export default function App() {
     return { focusScore: score, focusLabel: label, streakCount: currentStreak, streakDaysUI: last7 };
   }, [timeLogs, tasks]);
 
+  const activityTimeline = useMemo(() => {
+    const activities: any[] = [];
+
+    // 1. Task Completions
+    tasks?.forEach(t => {
+      if (t.status === 'done' && t.updated_at) {
+        activities.push({
+          id: `task-done-${t.id}`,
+          type: 'task',
+          title: 'You completed a task',
+          description: `"${t.title}"`,
+          timestamp: new Date(t.updated_at),
+          color: 'bg-emerald-500'
+        });
+      }
+    });
+
+    // 2. New Projects
+    projects?.forEach(p => {
+      activities.push({
+        id: `project-new-${p.id}`,
+        type: 'project',
+        title: 'New project started',
+        description: `"${p.name}"`,
+        timestamp: new Date(p.created_at || Date.now()),
+        color: 'bg-indigo-500'
+      });
+    });
+
+    // 3. AI Actions
+    aiActionLogs?.forEach(log => {
+      let title = 'Yukime performed an action';
+      let desc = log.action_type?.replace('_', ' ');
+
+      if (log.action_type === 'create_task') title = 'AI created a task';
+      if (log.action_type === 'create_project') title = 'AI created a project';
+      if (log.action_type === 'generate_report') title = 'AI generated a report';
+
+      activities.push({
+        id: `ai-${log.id}`,
+        type: 'ai',
+        title,
+        description: log.details?.title || log.details?.name || desc,
+        timestamp: new Date(log.timestamp),
+        color: 'bg-indigo-600'
+      });
+    });
+
+    // 4. Time Logs
+    timeLogs?.forEach((log, i) => {
+      activities.push({
+        id: `timelog-${i}`,
+        type: 'time',
+        title: 'Logged effort',
+        description: `${log.hours} hrs on task`,
+        timestamp: new Date(log.created_at || log.date),
+        color: 'bg-emerald-400'
+      });
+    });
+
+    return activities
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      .slice(0, 10);
+  }, [tasks, projects, aiActionLogs, timeLogs]);
+
   const [inviteEmail, setInviteEmail] = useState('');
   const [isAdminPanelLoading, setIsAdminPanelLoading] = useState(false);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isWorkspaceInfoOpen, setIsWorkspaceInfoOpen] = useState(false);
+
+  // Dynamic Metrics Calculation
+  const { completedToday, completedYesterday, timeToday, avgDailyTime } = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
+
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    const cToday = (Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'done' && t.updated_at?.startsWith(todayStr)).length;
+    const cYesterday = (Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'done' && t.updated_at?.startsWith(yesterdayStr)).length;
+
+    const tToday = (Array.isArray(timeLogs) ? timeLogs : []).filter(l => l.date === todayStr).reduce((acc, l) => acc + (l.hours || 0), 0);
+
+    // Calculate 7-day average for comparison
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      return d.toISOString().split('T')[0];
+    });
+    const total7DayTime = (Array.isArray(timeLogs) ? timeLogs : []).filter(l => last7Days.includes(l.date)).reduce((acc, l) => acc + (l.hours || 0), 0);
+    const avgTime = total7DayTime / 7;
+
+    return {
+      completedToday: cToday,
+      completedYesterday: cYesterday,
+      timeToday: tToday,
+      avgDailyTime: avgTime
+    };
+  }, [tasks, timeLogs]);
+
+  // Derived state for focus assistant
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [aiTaskPrompt, setAiTaskPrompt] = useState('');
   const [newSubtask, setNewSubtask] = useState('');
   const [activeDashCard, setActiveDashCard] = useState<'time' | 'completed' | 'active' | 'focus' | 'streak' | null>(null);
   const [isFocusModeOpen, setIsFocusModeOpen] = useState(false);
   const [tasksView, setTasksView] = useState<'all' | 'matrix'>('all');
+  const [projectSearch, setProjectSearch] = useState('');
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -200,6 +360,32 @@ export default function App() {
       if (typeof unsub === 'function') unsub();
     };
   }, [initializeAuth]);
+
+  useEffect(() => {
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      console.error('Unhandled Promise Rejection:', event.reason);
+      addNotification({
+        type: 'error',
+        message: `Async Failure: ${event.reason?.message || 'Unknown background error'}`
+      });
+    };
+
+    const handleGlobalError = (event: ErrorEvent) => {
+      console.error('Global Error:', event.error);
+      addNotification({
+        type: 'error',
+        message: `Runtime Error: ${event.message}`
+      });
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    window.addEventListener('error', handleGlobalError);
+
+    return () => {
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener('error', handleGlobalError);
+    };
+  }, [addNotification]);
 
   // Continuously sync main AI Chat History to cloud DB
   useEffect(() => {
@@ -224,10 +410,10 @@ export default function App() {
     if (!inviteEmail) return;
     const { error } = await inviteUser(inviteEmail);
     if (!error) {
-      alert('Invitation (Magic Link) sent!');
+      addNotification({ type: 'success', message: 'Invitation (Magic Link) sent!' });
       setInviteEmail('');
     } else {
-      alert(`Error: ${error.message}`);
+      addNotification({ type: 'error', message: `Error: ${error.message}` });
     }
   };
 
@@ -280,7 +466,7 @@ export default function App() {
 
   const handleOpenModal = (task?: Task) => {
     if (projects.length === 0) {
-      alert("You must create a project first before adding a task. Ask the Work Agent to create a project for you.");
+      addNotification({ type: 'warning', message: "Create a project first before adding a task." });
       return;
     }
 
@@ -346,7 +532,7 @@ export default function App() {
   const handleSaveTask = async (e: React.FormEvent, addAnother = false) => {
     e.preventDefault();
     if (formData.project_id === 0) {
-      alert("A valid project must be selected.");
+      addNotification({ type: 'warning', message: "A valid project must be selected." });
       return;
     }
 
@@ -380,7 +566,7 @@ export default function App() {
         }
         fetchData();
       } else {
-        alert(`Error: ${res.error.message}`);
+        addNotification({ type: 'error', message: `Error: ${res.error.message}` });
       }
     } catch (error) {
       console.error('Error saving task:', error);
@@ -400,7 +586,7 @@ export default function App() {
   const handleSaveProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!projectFormData.name.trim()) {
-      alert("Project name is required.");
+      addNotification({ type: 'warning', message: "Project name is required." });
       return;
     }
 
@@ -416,7 +602,7 @@ export default function App() {
         setIsProjectModalOpen(false);
         fetchData();
       } else {
-        alert(`Error: ${res.error.message}`);
+        addNotification({ type: 'error', message: `Error: ${res.error.message}` });
       }
     } catch (error) {
       console.error('Error saving project:', error);
@@ -437,7 +623,7 @@ export default function App() {
   const handleSaveTimeLog = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaskIdForTimeLog || timeLogFormData.hours <= 0) {
-      alert("Valid hours are required.");
+      addNotification({ type: 'warning', message: "Valid hours are required." });
       return;
     }
 
@@ -455,7 +641,7 @@ export default function App() {
         await fetchData();
         setTimeout(() => setIsRefreshing(false), 1000);
       } else {
-        alert(`Error: ${res.error.message}`);
+        addNotification({ type: 'error', message: `Error: ${res.error.message}` });
       }
     } catch (error) {
       console.error('Error logging time:', error);
@@ -466,6 +652,25 @@ export default function App() {
 
   // AbortController for stopping in-flight AI requests
   const abortControllerRef = React.useRef<AbortController | null>(null);
+  const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setAttachedFile({
+        name: file.name,
+        type: file.type,
+        data: base64.split(',')[1]
+      });
+    };
+    reader.readAsDataURL(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
@@ -478,11 +683,15 @@ export default function App() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if ((!input.trim() && !attachedFile) || isLoading) return;
 
     const userMessage = input;
+    const hasAttachment = !!attachedFile;
+    const currentFile = attachedFile;
+
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    setAttachedFile(null); // Clear early for UI responsiveness
+    setMessages(prev => [...prev, { role: 'user', content: userMessage || (currentFile ? `Attached: ${currentFile.name}` : '') }]);
     setIsLoading(true);
 
     // Create a fresh AbortController for this request
@@ -493,7 +702,7 @@ export default function App() {
       let didMutate = false;
 
       // Route the message: 'agent' = task CRUD (always server), 'cloud' = analytics (if enabled), 'local' = Q&A
-      const route = routeMessage(userMessage, !!workspaceSettings?.cloudAiEnabled, useLocalModel);
+      const route = routeMessage(userMessage, !!workspaceSettings?.cloudAiEnabled, useLocalModel, hasAttachment);
       console.log(`[AI Router] "${userMessage.slice(0, 60)}" → ${route.toUpperCase()}`);
 
       let finalResponseText = '';
@@ -523,10 +732,12 @@ export default function App() {
                 'Authorization': `Bearer ${session?.access_token || ''}`
               },
               body: JSON.stringify({
-                message: userMessage,
+                message: userMessage || (hasAttachment ? `Analyze this file: ${currentFile?.name}` : ''),
                 history: messages.map(m => ({ role: m.role, content: m.content })),
                 userId: currentUserId,
-                userRole: userProfile?.global_role
+                userRole: userProfile?.global_role,
+                fileData: currentFile?.data,
+                mimeType: currentFile?.type
               }),
               signal: controller.signal
             });
@@ -560,10 +771,12 @@ export default function App() {
             'Authorization': `Bearer ${session?.access_token || ''}`
           },
           body: JSON.stringify({
-            message: userMessage,
+            message: userMessage || (hasAttachment ? `Analyze this file: ${currentFile?.name}` : ''),
             history: messages.map(m => ({ role: m.role, content: m.content })),
             userId: user?.id,
-            userRole: userProfile?.global_role
+            userRole: userProfile?.global_role,
+            fileData: currentFile?.data,
+            mimeType: currentFile?.type
           }),
           signal: controller.signal
         });
@@ -619,12 +832,120 @@ export default function App() {
     }
   };
 
+  const getTimeRemaining = (dueDate?: string) => {
+    if (!dueDate) return 'No due date';
+    const now = new Date();
+    const due = new Date(dueDate);
+    const diff = due.getTime() - now.getTime();
+
+    if (diff <= 0) return 'Overdue';
+
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+    if (days > 0) return `${days}d ${hours % 24}h remains`;
+    if (hours > 0) return `${hours}h ${mins}m remains`;
+    return `${mins}m remains`;
+  };
+
+  const getRemainingColor = (dueDate?: string) => {
+    if (!dueDate) return 'text-gray-400 bg-gray-400/10';
+    const now = new Date();
+    const due = new Date(dueDate);
+    const diff = due.getTime() - now.getTime();
+    if (diff <= 0) return 'text-red-500 bg-red-500/10';
+    if (diff < 1000 * 60 * 60 * 2) return 'text-amber-500 bg-amber-500/10'; // < 2 hours
+    return 'text-indigo-500 bg-indigo-500/10';
+  };
+
   if (!user) {
     return <Auth />;
   }
 
   return (
     <div className={`flex h-screen ${isDarkMode ? 'dark bg-[#0A0A0B] text-gray-100' : 'bg-[#F8F9FA] text-[#1A1A1A]'} font-sans overflow-hidden transition-colors duration-300`}>
+      <NotificationToast />
+
+      {/* Team Modal */}
+      <AnimatePresence>
+        {isTeamModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className={`${isDarkMode ? 'bg-[#121214] border-gray-800 shadow-indigo-500/10' : 'bg-white border-gray-100 shadow-xl'} border rounded-[32px] shadow-2xl w-full max-w-2xl overflow-hidden`}
+            >
+              {/* Modal Header */}
+              <div className={`p-8 border-b ${isDarkMode ? 'border-gray-800 bg-[#171719]' : 'border-gray-100 bg-gray-50/50'} flex justify-between items-center`}>
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                    <Users className="text-white" size={24} />
+                  </div>
+                  <div>
+                    <h3 className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'} tracking-tight`}>Active Team Members</h3>
+                    <p className="text-gray-500 text-sm font-medium">Collaborate and stay connected with your team</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsTeamModalOpen(false)}
+                  className={`p-2.5 rounded-xl ${isDarkMode ? 'hover:bg-gray-800 text-gray-400' : 'hover:bg-gray-100 text-gray-500'} transition-all`}
+                >
+                  <Plus className="rotate-45" size={24} />
+                </button>
+              </div>
+
+              {/* Modal Content */}
+              <div className="p-8 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {myTeamMembers.map(member => {
+                    const lastActive = member.last_active_at ? new Date(member.last_active_at) : null;
+                    // Strict online check: must have a heartbeat within 5m AND not be a stale migration default (optional)
+                    const isOnline = lastActive && (Date.now() - lastActive.getTime()) < 5 * 60 * 1000;
+
+                    return (
+                      <div
+                        key={member.id}
+                        className={`group p-4 rounded-[24px] border transition-all ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 hover:border-indigo-500/50' : 'bg-gray-50 border-gray-100 hover:border-indigo-200'} flex items-center justify-between`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="relative">
+                            <img
+                              src={member.avatar_url || `https://picsum.photos/seed/${member.name}/40/40`}
+                              className="w-12 h-12 rounded-2xl object-cover shadow-sm"
+                              alt={member.name}
+                            />
+                            <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 ${isDarkMode ? 'border-[#1A1A1C]' : 'border-gray-50'} ${isOnline ? 'bg-emerald-500 shadow-lg shadow-emerald-500/20' : 'bg-blue-500 shadow-lg shadow-blue-500/20'}`} />
+                          </div>
+                          <div>
+                            <p className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} leading-snug`}>{member.full_name || member.name}</p>
+                            <p className="text-[11px] text-gray-500 font-medium">{member.global_role || 'Member'} • {isOnline ? 'Online' : 'Offline'}</p>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => sendPoke(member.id)}
+                          className={`p-3 rounded-2xl transition-all ${isDarkMode ? 'bg-gray-800 text-gray-400 hover:text-indigo-400 hover:bg-indigo-500/10' : 'bg-white text-gray-400 hover:text-indigo-600 hover:shadow-md'} shadow-sm`}
+                          title="Buzz member"
+                        >
+                          <Zap size={18} className="group-hover:animate-bounce" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className={`p-6 border-t ${isDarkMode ? 'border-gray-800 bg-[#171719]' : 'border-gray-100 bg-gray-50/30'} flex justify-center`}>
+                <p className="text-gray-500 text-[11px] font-bold uppercase tracking-widest flex items-center gap-2 text-center">
+                  <Flame size={12} className="text-orange-500" /> Powered by Yukime 2.5
+                </p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
       <div className="flex w-full h-full bg-inherit">
         {/* Sidebar */}
         {/* Sidebar */}
@@ -872,13 +1193,26 @@ export default function App() {
               >
                 <MessageSquare size={20} />
               </button>
-              <div className="flex -space-x-2 hidden md:flex">
-                {[1, 2, 3].map(i => (
-                  <div key={i} className={`w-8 h-8 rounded-full border-2 ${isDarkMode ? 'border-[#121214]' : 'border-white'} bg-gray-200 overflow-hidden`}>
-                    <img src={`https://picsum.photos/seed/${i + 10}/32/32`} alt="user" referrerPolicy="no-referrer" />
+              {myTeamMembers.length > 0 && (
+                <button
+                  onClick={() => setIsTeamModalOpen(true)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all ${isDarkMode ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20' : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100 shadow-sm'} group`}
+                >
+                  <div className="flex -space-x-1.5">
+                    {myTeamMembers.slice(0, 3).map((member, i) => (
+                      <div key={member.id} className={`w-6 h-6 rounded-full border-2 ${isDarkMode ? 'border-[#121214]' : 'border-white'} overflow-hidden shadow-sm transition-transform group-hover:scale-110`} style={{ zIndex: 10 - i }}>
+                        <img src={member.avatar_url || `https://picsum.photos/seed/${member.name}/32/32`} alt="team" className="w-full h-full object-cover" />
+                      </div>
+                    ))}
+                    {myTeamMembers.length > 3 && (
+                      <div className={`w-6 h-6 rounded-full border-2 ${isDarkMode ? 'border-[#121214] bg-gray-800' : 'border-white bg-gray-100'} flex items-center justify-center text-[10px] font-bold text-gray-500 z-0`}>
+                        +{myTeamMembers.length - 3}
+                      </div>
+                    )}
                   </div>
-                ))}
-              </div>
+                  <span className="text-xs font-bold whitespace-nowrap hidden lg:block">My Team</span>
+                </button>
+              )}
               <button
                 onClick={() => alert('No new notifications')}
                 className={`p-2 ${isDarkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'} transition-colors`}
@@ -899,7 +1233,7 @@ export default function App() {
                     <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl -mr-8 -mt-8"></div>
                     <p className="text-gray-400 text-xs font-medium tracking-wide mb-4">Total Time Today</p>
                     <div className="flex items-end gap-2 relative z-10">
-                      <p className="text-3xl font-black text-white tracking-tight">{totalHours}</p>
+                      <p className="text-3xl font-black text-white tracking-tight">{timeToday.toFixed(1)}</p>
                       <p className="text-emerald-400 text-sm font-bold mb-1">hrs</p>
                     </div>
                     <div className="mt-3 flex items-end gap-1 h-8">
@@ -918,7 +1252,9 @@ export default function App() {
                     </div>
                     <div>
                       <p className={`text-4xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-1`}>{(Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'done').length}</p>
-                      <span className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded-full inline-block">+2 from yesterday</span>
+                      <span className={`text-[10px] font-bold ${completedYesterday > 0 ? 'text-emerald-500 bg-emerald-500/10' : 'text-gray-500 bg-gray-500/10'} px-1.5 py-0.5 rounded-full inline-block`}>
+                        {completedYesterday > 0 ? `+${completedYesterday}` : '0'} from yesterday
+                      </span>
                     </div>
                     <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-indigo-500/0 via-indigo-500/60 to-indigo-500/0 opacity-0 group-hover:opacity-100 transition-opacity" />
                   </button>
@@ -985,8 +1321,19 @@ export default function App() {
 
                 {/* Dashboard Card Modals */}
                 <AnimatePresence>
-                  {activeDashCard === 'time' && <TotalTimeModal onClose={() => setActiveDashCard(null)} />}
-                  {activeDashCard === 'completed' && <TasksCompletedModal onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'time' && (
+                    <TotalTimeModal
+                      onClose={() => setActiveDashCard(null)}
+                      timeToday={timeToday}
+                      avgDailyTime={avgDailyTime}
+                    />
+                  )}
+                  {activeDashCard === 'completed' && (
+                    <TasksCompletedModal
+                      onClose={() => setActiveDashCard(null)}
+                      completedYesterday={completedYesterday}
+                    />
+                  )}
                   {activeDashCard === 'active' && <ActiveTasksModal onClose={() => setActiveDashCard(null)} />}
                   {activeDashCard === 'focus' && <FocusScoreModal onClose={() => setActiveDashCard(null)} />}
                   {activeDashCard === 'streak' && <ConsistencyModal onClose={() => setActiveDashCard(null)} />}
@@ -1068,11 +1415,12 @@ export default function App() {
                           <div key={task.id} className="group">
                             <div className="flex justify-between items-center mb-2">
                               <p className={`font-medium text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>{task.title}</p>
-                              <p className="text-xs font-bold text-indigo-500 bg-indigo-500/10 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span> Time running
+                              <p className={`text-[10px] font-bold ${getRemainingColor(task.due_date)} px-2 py-1 rounded-full flex items-center gap-1.5 transition-colors`}>
+                                <span className={`w-1 h-1 rounded-full ${task.due_date && new Date(task.due_date) < new Date() ? 'bg-red-500' : 'bg-current'} animate-pulse`}></span>
+                                {getTimeRemaining(task.due_date)}
                               </p>
                             </div>
-                            <div className="w-full h-2 bg-gray-200 dark:bg-gray-800 rounded-full overflow-hidden">
+                            <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-800 rounded-full overflow-hidden">
                               <div className="h-full bg-indigo-500 w-1/2 group-hover:w-3/4 transition-all duration-1000 ease-in-out"></div>
                             </div>
                           </div>
@@ -1089,25 +1437,19 @@ export default function App() {
                         <h3 className={`font-bold tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Activity Timeline</h3>
                       </div>
                       <div className="p-6 pl-8">
-                        <div className="space-y-6 border-l-2 border-indigo-500/20 pl-6 relative">
-                          {/* Marker 1 */}
-                          <div className="relative">
-                            <span className="absolute -left-[33px] top-0.5 w-4 h-4 rounded-full bg-indigo-500 border-4 border-[#121214]"></span>
-                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>You completed a task</p>
-                            <p className="text-xs text-gray-500 mt-1">"Update dashboard layout" • 2 hours ago</p>
-                          </div>
-                          {/* Marker 2 */}
-                          <div className="relative">
-                            <span className="absolute -left-[33px] top-0.5 w-4 h-4 rounded-full bg-gray-500 dark:bg-gray-700 border-4 border-[#121214]"></span>
-                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>AI generated report</p>
-                            <p className="text-xs text-gray-500 mt-1">Weekly productivity analysis is ready • 5 hours ago</p>
-                          </div>
-                          {/* Marker 3 */}
-                          <div className="relative">
-                            <span className="absolute -left-[33px] top-0.5 w-4 h-4 rounded-full bg-gray-500 dark:bg-gray-700 border-4 border-[#121214]"></span>
-                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>Task updated</p>
-                            <p className="text-xs text-gray-500 mt-1">"Fix database schema" status changed to In Progress • Yesterday</p>
-                          </div>
+                        <div className="space-y-6 border-l-2 border-indigo-500/10 pl-6 relative">
+                          {activityTimeline.map((activity, idx) => (
+                            <div key={activity.id} className="relative">
+                              <span className={`absolute -left-[33px] top-0.5 w-4 h-4 rounded-full ${activity.color} border-4 ${isDarkMode ? 'border-[#121214]' : 'border-white'}`}></span>
+                              <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>{activity.title}</p>
+                              <p className="text-xs text-gray-500 mt-1">
+                                {activity.description} • {new Date(activity.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </p>
+                            </div>
+                          ))}
+                          {activityTimeline.length === 0 && (
+                            <p className="text-sm text-gray-500 italic py-4">The path is quiet. Start an objective to see movement.</p>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1472,44 +1814,94 @@ export default function App() {
 
               <div className={`p-6 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
                 <form onSubmit={handleSendMessage} className="relative">
-                  <textarea
-                    ref={(el) => {
-                      if (el) {
-                        el.style.height = 'auto';
-                        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-                      }
-                    }}
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage(e as any);
-                      }
-                    }}
-                    placeholder={isLoading ? 'Yukime is thinking...' : 'Ask me to create a task...'}
-                    disabled={isLoading}
-                    rows={1}
-                    className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-2xl px-5 py-4 pr-14 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all disabled:opacity-60 resize-none overflow-hidden`}
+                  <AnimatePresence>
+                    {attachedFile && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                        className={`absolute bottom-full left-0 right-0 mb-3 mx-2 p-3 rounded-2xl border flex items-center justify-between shadow-xl backdrop-blur-md ${isDarkMode ? 'bg-[#1A1A1C]/90 border-indigo-500/30' : 'bg-white/90 border-indigo-200'}`}
+                      >
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600'}`}>
+                            {attachedFile.type.startsWith('image/') ? (
+                              <img src={`data:${attachedFile.type};base64,${attachedFile.data}`} className="w-full h-full object-cover rounded-xl" alt="preview" />
+                            ) : (
+                              <FileText size={20} />
+                            )}
+                          </div>
+                          <div className="overflow-hidden">
+                            <p className={`text-sm font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{attachedFile.name}</p>
+                            <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">{(attachedFile.type.split('/')[1] || 'binary').toUpperCase()}</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAttachedFile(null)}
+                          className={`p-2 rounded-xl transition-all ${isDarkMode ? 'hover:bg-red-500/10 text-red-400' : 'hover:bg-red-50 text-red-500'}`}
+                        >
+                          <Plus className="rotate-45" size={18} />
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    className="hidden"
+                    accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
                   />
-                  {isLoading ? (
+
+                  <div className={`relative flex items-end gap-2 p-2 rounded-2xl border transition-all ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 focus-within:border-indigo-500/50' : 'bg-gray-50 border-gray-200 focus-within:border-indigo-500/50'}`}>
                     <button
                       type="button"
-                      onClick={handleStopGeneration}
-                      title="Stop generation"
-                      className="absolute right-2 top-2 bottom-2 w-10 bg-red-500 text-white rounded-xl flex items-center justify-center hover:bg-red-600 transition-all animate-pulse"
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`p-3 rounded-xl transition-all shrink-0 ${isDarkMode ? 'text-gray-400 hover:text-white hover:bg-gray-800' : 'text-gray-500 hover:text-indigo-600 hover:bg-indigo-50'}`}
+                      title="Attach file"
                     >
-                      <Square size={16} fill="white" />
+                      <Paperclip size={20} />
                     </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      disabled={!input.trim()}
-                      className="absolute right-2 top-2 bottom-2 w-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 transition-all"
-                    >
-                      <Send size={18} />
-                    </button>
-                  )}
+                    <textarea
+                      ref={(el) => {
+                        if (el) {
+                          el.style.height = 'auto';
+                          el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+                        }
+                      }}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendMessage(e as any);
+                        }
+                      }}
+                      placeholder={isLoading ? 'Thinking...' : 'Ask me anything or upload a file...'}
+                      disabled={isLoading}
+                      rows={1}
+                      className="flex-1 bg-transparent border-none text-sm focus:outline-none focus:ring-0 transition-all disabled:opacity-60 resize-none py-2 px-1 max-h-[200px] custom-scrollbar"
+                    />
+                    {isLoading ? (
+                      <button
+                        type="button"
+                        onClick={handleStopGeneration}
+                        title="Stop generation"
+                        className="p-3 bg-red-500 text-white rounded-xl flex items-center justify-center hover:bg-red-600 transition-all shrink-0 animate-pulse"
+                      >
+                        <Square size={16} fill="white" />
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        disabled={!input.trim() && !attachedFile}
+                        className={`p-3 rounded-xl flex items-center justify-center transition-all shrink-0 ${input.trim() || attachedFile ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-900/20' : 'bg-gray-500/20 text-gray-500 cursor-not-allowed'}`}
+                      >
+                        <Send size={18} />
+                      </button>
+                    )}
+                  </div>
                 </form>
                 <p className="text-[10px] text-gray-500 text-center mt-4 font-medium uppercase tracking-widest">
                   Powered by Yukime
@@ -1905,84 +2297,121 @@ export default function App() {
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white'} w-full max-w-lg rounded-3xl shadow-2xl relative z-10 overflow-hidden`}
+                className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white'} w-full max-w-4xl rounded-3xl shadow-2xl relative z-10 overflow-hidden`}
               >
-                <div className="p-8">
-                  <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-6`}>
-                    {editingProject ? 'Edit Project' : 'Create New Project'}
-                  </h3>
+                <div className="flex flex-col lg:flex-row h-full max-h-[90vh]">
+                  {/* Left Column: Create/Edit Form */}
+                  <div className={`lg:w-1/2 p-8 ${isDarkMode ? 'border-gray-800' : 'border-gray-100'} lg:border-r overflow-y-auto`}>
+                    <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-6`}>
+                      {editingProject ? 'Edit Project' : 'Create New Project'}
+                    </h3>
 
-                  {editingProject && (
-                    <div className="mb-6 flex justify-end">
-                      <button
-                        onClick={() => handleDeleteProject(editingProject.id)}
-                        className="text-red-600 text-sm font-bold flex items-center gap-1 hover:text-red-700"
-                      >
-                        <Trash2 size={14} /> Delete Entire Project
-                      </button>
+                    <form onSubmit={handleSaveProject} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5">Project Name</label>
+                        <input
+                          required
+                          type="text"
+                          value={projectFormData.name}
+                          onChange={e => setProjectFormData(prev => ({ ...prev, name: e.target.value }))}
+                          className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white placeholder:text-gray-500' : 'bg-gray-50 border-gray-200 text-gray-900'} rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all`}
+                          placeholder="e.g. Marketing Q3"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5">Description</label>
+                        <textarea
+                          value={projectFormData.description}
+                          onChange={e => setProjectFormData(prev => ({ ...prev, description: e.target.value }))}
+                          className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white placeholder:text-gray-500' : 'bg-gray-50 border-gray-200 text-gray-900'} rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all h-24 resize-none`}
+                          placeholder="Project details..."
+                        />
+                      </div>
+
+                      <div className="flex gap-3 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsProjectModalOpen(false);
+                            clearProjectSelection();
+                          }}
+                          className={`${isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-100 text-gray-600'} flex-1 py-3 rounded-xl font-bold hover:bg-opacity-80 transition-all`}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20"
+                        >
+                          {editingProject ? 'Save Changes' : 'Create Project'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Right Column: Project Inventory */}
+                  <div className="lg:w-1/2 p-8 flex flex-col min-h-0 bg-[#0A0A0B]/30">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className={`text-sm font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'} uppercase tracking-widest`}>Project Inventory</h4>
+                      {selectedProjectIds.length > 0 && (
+                        <button
+                          onClick={() => bulkDeleteProjects(selectedProjectIds)}
+                          className="text-red-500 text-xs font-bold flex items-center gap-1.5 hover:bg-red-500/10 px-3 py-1.5 rounded-lg transition-all"
+                        >
+                          <Trash2 size={14} /> Delete Selected ({selectedProjectIds.length})
+                        </button>
+                      )}
                     </div>
-                  )}
 
-                  <form onSubmit={handleSaveProject} className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5">Project Name</label>
+                    <div className="relative mb-4">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
                       <input
-                        required
                         type="text"
-                        value={projectFormData.name}
-                        onChange={e => setProjectFormData(prev => ({ ...prev, name: e.target.value }))}
-                        className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white placeholder:text-gray-500' : 'bg-gray-50 border-gray-200 text-gray-900'} rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all`}
-                        placeholder="e.g. Marketing Q3"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5">Description</label>
-                      <textarea
-                        value={projectFormData.description}
-                        onChange={e => setProjectFormData(prev => ({ ...prev, description: e.target.value }))}
-                        className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white placeholder:text-gray-500' : 'bg-gray-50 border-gray-200 text-gray-900'} rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all h-24 resize-none`}
-                        placeholder="Project details..."
+                        placeholder="Search projects..."
+                        value={projectSearch}
+                        onChange={e => setProjectSearch(e.target.value)}
+                        className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white' : 'bg-white border-gray-100'} pl-9 pr-4 py-2 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none border transition-all`}
                       />
                     </div>
 
-                    <div className="flex gap-3 pt-4">
-                      <button
-                        type="button"
-                        onClick={() => setIsProjectModalOpen(false)}
-                        className="flex-1 bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200 transition-all"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
-                      >
-                        {editingProject ? 'Save Changes' : 'Create Project'}
-                      </button>
-                    </div>
-                  </form>
-
-                  {!editingProject && projects.length > 0 && (
-                    <div className="mt-8 border-t border-gray-100 pt-6">
-                      <h4 className="text-sm font-bold text-gray-900 mb-4">Existing Projects</h4>
-                      <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
-                        {projects.map(p => (
-                          <div key={p.id} className={`flex items-center justify-between p-3 ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800' : 'bg-gray-50 border-gray-100'} rounded-xl border`}>
-                            <div>
-                              <p className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{p.name}</p>
-                              <p className="text-xs text-gray-500 truncate max-w-[200px]">{p.description}</p>
+                    <div className="flex-1 overflow-y-auto pr-2 space-y-2 custom-scrollbar">
+                      {projects
+                        .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()))
+                        .map(p => (
+                          <div
+                            key={p.id}
+                            className={`group flex items-center gap-3 p-3 ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800' : 'bg-white border-gray-200'} rounded-xl border hover:border-indigo-500/50 transition-all`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedProjectIds.includes(p.id)}
+                              onChange={() => toggleProjectSelection(p.id)}
+                              className="w-4 h-4 rounded border-gray-700 bg-gray-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-gray-900"
+                            />
+                            <div className="flex-1 min-w-0" onClick={() => handleOpenProjectModal(p)}>
+                              <p className={`text-sm font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{p.name}</p>
+                              <p className="text-[10px] text-gray-500 truncate">{p.description || 'No description'}</p>
                             </div>
                             <button
-                              onClick={() => handleOpenProjectModal(p)}
-                              className="text-indigo-600 text-xs font-bold hover:underline"
+                              onClick={() => deleteProject(p.id)}
+                              className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-500 hover:text-red-500 transition-all"
                             >
-                              Edit
+                              <Trash2 size={14} />
                             </button>
                           </div>
                         ))}
-                      </div>
+
+                      {projects.length === 0 && (
+                        <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                          <div className={`w-12 h-12 rounded-full ${isDarkMode ? 'bg-gray-800' : 'bg-gray-50'} flex items-center justify-center mb-3`}>
+                            <Briefcase size={20} className="text-gray-600" />
+                          </div>
+                          <p className="text-sm font-bold text-gray-500">No projects yet</p>
+                          <p className="text-xs text-gray-600 mt-1">Foundational projects appear here.</p>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               </motion.div>
             </div>

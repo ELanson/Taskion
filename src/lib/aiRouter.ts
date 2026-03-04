@@ -60,12 +60,12 @@ const CLOUD_PATTERNS = [
  * @param message  The raw user message string.
  * @param cloudEnabled  Whether the cloud AI engine is on in workspace settings.
  * @param useLocalModel Whether the user has toggled "Use Local Model" on.
+ * @param hasAttachment Whether the message includes an uploaded file/image.
  */
-export function routeMessage(message: string, cloudEnabled: boolean, useLocalModel: boolean): RouteDecision {
-    // Task/project mutations
-    if (AGENT_PATTERNS.some(p => p.test(message))) {
-        // Always go to the server-side Gemini agent for mutations
-        // This ensures reliability for CRUD operations
+export function routeMessage(message: string, cloudEnabled: boolean, useLocalModel: boolean, hasAttachment?: boolean): RouteDecision {
+    // Force agent/cloud for attachments or mutations
+    if (hasAttachment || AGENT_PATTERNS.some(p => p.test(message))) {
+        // Always go to the server-side Gemini agent for mutations or attachments
         return 'agent';
     }
 

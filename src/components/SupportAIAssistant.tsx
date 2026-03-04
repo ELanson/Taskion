@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
-import { Send, Wand2, Bot, User, Sparkles, Loader2, Shield, Users, UserCheck, ChevronRight, RotateCcw, Square } from 'lucide-react';
+import { Send, Wand2, Bot, User, Sparkles, Loader2, Shield, Users, UserCheck, ChevronRight, RotateCcw, Square, Paperclip, FileText, Plus } from 'lucide-react';
 import { chatWithLocalModel } from '../lib/localAi';
 import { routeMessage } from '../lib/aiRouter';
 import ReactMarkdown from 'react-markdown';
@@ -88,8 +88,26 @@ export const SupportAIAssistant: React.FC = () => {
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
+
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const base64 = event.target?.result as string;
+            setAttachedFile({
+                name: file.name,
+                type: file.type,
+                data: base64.split(',')[1] // Just the base64 part
+            });
+        };
+        reader.readAsDataURL(file);
+    };
 
     const handleStopGeneration = () => {
         if (abortControllerRef.current) {
@@ -161,6 +179,21 @@ User Role: ${userGlobalRole}
 9. If you are an Admin/Manager and the user asks to assign a task to "me" or "myself", use their User ID (${userId}) as the assignee_id.
 10. NEVER emit warnings in your text response claiming the User ID is a "placeholder" or "unresolved" or "non-UUID". The ID is fully verified.`;
 
+            const payload: any = {
+                message: text.trim(),
+                history: history.map((m: any) => ({ role: m.role, content: m.content })),
+                systemPrompt: dynamicSystemPrompt,
+                userId: userId,
+                userRole: userGlobalRole
+            };
+
+            const hasAttachment = !!attachedFile;
+            if (attachedFile) {
+                payload.fileData = attachedFile.data;
+                payload.mimeType = attachedFile.type;
+                setAttachedFile(null); // Clear after sending
+            }
+
             const systemContextMessages = [
                 { role: 'system' as const, content: dynamicSystemPrompt },
                 ...history,
@@ -172,7 +205,8 @@ User Role: ${userGlobalRole}
 
             // Smart routing: CRUD tasks always go to local LLM.
             // Gemini is only used for complex analytics, reports, real-time queries.
-            const route = routeMessage(text.trim(), !!workspaceSettings?.cloudAiEnabled, !!useLocalModel);
+            // FORCING Cloud if attachment exists.
+            const route = routeMessage(text.trim(), !!workspaceSettings?.cloudAiEnabled, !!useLocalModel, hasAttachment);
 
             if (route === 'local') {
                 const { text: localRes, didMutate: localMutated } = await chatWithLocalModel(systemContextMessages, localModelUrl, userId, userGlobalRole);
@@ -183,11 +217,7 @@ User Role: ${userGlobalRole}
                 const res = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: text.trim(),
-                        history: history.map((m: any) => ({ role: m.role, content: m.content })),
-                        systemPrompt: dynamicSystemPrompt
-                    }),
+                    body: JSON.stringify(payload),
                     signal: abortControllerRef.current?.signal
                 });
                 const data = await res.json();
@@ -303,7 +333,50 @@ User Role: ${userGlobalRole}
 
             {/* Input */}
             <div className={`shrink-0 p-4 border-t ${dk ? 'border-gray-800 bg-[#121214]' : 'border-gray-100 bg-gray-50'}`}>
-                <div className={`flex gap-3 items-end p-3 rounded-2xl border ${dk ? 'bg-[#1a1c1d] border-gray-800' : 'bg-white border-gray-200'}`}>
+                {/* File Preview */}
+                <AnimatePresence>
+                    {attachedFile && (
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            className={`mb-3 p-2 rounded-xl border flex items-center justify-between gap-3 ${dk ? 'bg-indigo-500/5 border-indigo-500/20' : 'bg-indigo-50 border-indigo-100'}`}
+                        >
+                            <div className="flex items-center gap-3 min-w-0">
+                                <div className={`p-2 rounded-lg ${dk ? 'bg-indigo-500/20' : 'bg-indigo-100'} text-indigo-500`}>
+                                    <FileText size={16} />
+                                </div>
+                                <div className="truncate">
+                                    <p className={`text-xs font-bold truncate ${dk ? 'text-indigo-200' : 'text-indigo-900'}`}>{attachedFile.name}</p>
+                                    <p className="text-[10px] text-gray-500 uppercase tracking-widest">{attachedFile.type.split('/')[1] || 'File'}</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setAttachedFile(null)}
+                                className={`p-1.5 rounded-lg hover:bg-gray-500/10 ${dk ? 'text-gray-400' : 'text-gray-500'}`}
+                            >
+                                <Plus className="rotate-45" size={14} />
+                            </button>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                <div className={`flex gap-3 items-end p-3 rounded-2xl border ${dk ? 'bg-[#1a1c1d] border-gray-800 focus-within:border-indigo-500/50' : 'bg-white border-gray-200 focus-within:border-indigo-500/50'} transition-all`}>
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        className="hidden"
+                        onChange={handleFileSelect}
+                        accept="image/*,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    />
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isLoading}
+                        className={`p-2.5 rounded-xl transition-all ${attachedFile ? 'text-indigo-500 bg-indigo-500/10' : 'text-gray-500 hover:bg-gray-500/10'} shrink-0`}
+                        title="Attach Media or Document"
+                    >
+                        <Paperclip size={18} />
+                    </button>
                     <textarea
                         ref={(el) => {
                             if (el) {
