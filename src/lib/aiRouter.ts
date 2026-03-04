@@ -14,25 +14,25 @@ export type RouteDecision = 'agent' | 'cloud' | 'local';
 // Keywords that indicate a task/project CRUD mutation  → 'agent' (always cloud, regardless of toggle)
 const AGENT_PATTERNS = [
     // Create
-    /create (.* )?(task|project)/i,
-    /add (.* )?(task|project|item)/i,
-    /make (.* )?(task|project)/i,
+    /create .* (task|project)/i,
+    /add .* (task|project|item)/i,
+    /make .* (task|project)/i,
     /new task/i,
     // Update any field
-    /update (.* )?(task|project)/i,
-    /(change|set|update) (.* )?(status|priority|due date|title|description|assignee|start date|start time|due time)/i,
-    /mark (.* )?(done|complete|in.progress|blocked|todo)/i,
-    /rename (.* )?(task|project)/i,
-    /edit (.* )?(task|project)/i,
-    /move (.* )?(task|project)/i,
-    /assign (.* )? to/i,
+    /update .* (task|project)/i,
+    /(change|set|update) .* (status|priority|due date|title|description|assignee|start date|start time|due time)/i,
+    /mark .* (done|complete|in.progress|blocked|todo)/i,
+    /rename .* (task|project)/i,
+    /edit .* (task|project)/i,
+    /move .* (task|project)/i,
+    /assign .* to/i,
     // Delete
-    /delete (.* )?(task|project)/i,
-    /remove (.* )?(task|project)/i,
-    /get rid of (.* )?(task|project)/i,
+    /delete .* (task|project)/i,
+    /remove .* (task|project)/i,
+    /get rid of .* (task|project)/i,
     // Log time
-    /log (.* )?(time|hours?)/i,
-    /i (worked|spent) (.* )?(hour|minute)/i,
+    /log .* (time|hours?)/i,
+    /i (worked|spent) .* (hour|minute)/i,
     // Undo
     /undo/i,
     /revert/i,

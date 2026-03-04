@@ -242,25 +242,21 @@ export async function chatWithLocalModel(
         // Local models often add intro/outro text. We search the entire content for [TOOL_CALLS] patterns.
         if (assistantMessage.content) {
             assistantMessage.tool_calls = assistantMessage.tool_calls || [];
-            const regex = /\[TOOL_CALLS\](.*?)(?=\[TOOL_CALLS\]|\[ARGS\]|$)/g;
+            const combinedRegex = /\[TOOL_CALLS\](.*?)(?=\[TOOL_CALLS\]|\[ARGS\]|$)/g;
             const argsRegex = /\[ARGS\](\{[\s\S]*?\})(?=\[TOOL_CALLS\]|$)/g;
 
-            // Simple iterative extraction for all matches
-            let contentCopy = assistantMessage.content;
+            let cleanContent = assistantMessage.content;
             let match;
 
-            // Temporary storage for text cleanup
-            let cleanContent = assistantMessage.content;
-
-            while ((match = regex.exec(assistantMessage.content)) !== null) {
+            while ((match = combinedRegex.exec(assistantMessage.content)) !== null) {
                 const toolName = match[1].trim();
-                const startPos = match.index;
+                const toolCallStart = match.index;
 
-                // Find the [ARGS] that follows this [TOOL_CALLS]
-                argsRegex.lastIndex = startPos;
+                // Move argsRegex to start looking after the current [TOOL_CALLS]
+                argsRegex.lastIndex = combinedRegex.lastIndex;
                 const argsMatch = argsRegex.exec(assistantMessage.content);
 
-                if (argsMatch) {
+                if (argsMatch && argsMatch.index < (combinedRegex.lastIndex + 50)) { // Ensure [ARGS] is close to [TOOL_CALLS]
                     const jsonStr = argsMatch[1];
                     try {
                         // Sanitize and Parse
@@ -268,22 +264,21 @@ export async function chatWithLocalModel(
                             return `: "${inner.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`;
                         });
 
-                        const args = JSON.parse(sanitizedJson);
                         assistantMessage.tool_calls.push({
                             id: `local_call_${Math.random().toString(36).slice(2, 11)}`,
                             type: 'function',
                             function: { name: toolName, arguments: sanitizedJson }
                         });
 
-                        // Remove the tool call from the visible text
-                        const fullCallStr = assistantMessage.content.substring(startPos, argsRegex.lastIndex);
-                        cleanContent = cleanContent.replace(fullCallStr, '');
+                        // Removal: Remove from [TOOL_CALLS] up to the end of [ARGS]
+                        const fullMatchText = assistantMessage.content.substring(toolCallStart, argsRegex.lastIndex);
+                        cleanContent = cleanContent.replace(fullMatchText, '');
                     } catch (e) {
                         console.warn(`[Local AI] Failed to parse args for ${toolName}:`, e);
                     }
                 }
             }
-            assistantMessage.content = cleanContent.trim();
+            assistantMessage.content = cleanContent.replace(/\[TOOL_CALLS\]|\[ARGS\]/g, '').trim();
         }
         // -------------------------------------------
 
