@@ -366,10 +366,26 @@ export async function chatWithLocalModel(
                                     .single();
                                 if (recentProj) {
                                     console.warn(`[Local AI RELIABILITY] Project "${taskPayload.project_id}" not found. Falling back to ${recentProj.id}`);
-                                    taskPayload.project_id = recentProj.id;
                                 }
                             }
                         }
+
+                        // Merge Date and Time
+                        if (taskPayload.start_date && taskPayload.start_time) {
+                            taskPayload.start_date = `${taskPayload.start_date.split('T')[0]}T${taskPayload.start_time}:00`;
+                        } else if (taskPayload.start_time) {
+                            taskPayload.start_date = `${new Date().toISOString().split('T')[0]}T${taskPayload.start_time}:00`;
+                        }
+
+                        if (taskPayload.due_date && taskPayload.due_time) {
+                            taskPayload.due_date = `${taskPayload.due_date.split('T')[0]}T${taskPayload.due_time}:00`;
+                        } else if (taskPayload.due_time) {
+                            taskPayload.due_date = `${new Date().toISOString().split('T')[0]}T${taskPayload.due_time}:00`;
+                        }
+
+                        // Remove helper fields
+                        delete taskPayload.start_time;
+                        delete taskPayload.due_time;
 
                         const { error, data } = await supabase.from('tasks').insert([{ ...taskPayload, user_id: userId }]).select();
                         if (!error) didMutate = true;
@@ -380,6 +396,19 @@ export async function chatWithLocalModel(
                     } else if (name === 'update_task') {
                         const updates = sanitize(args);
                         const { task_id, ...otherUpdates } = updates;
+
+                        // Merge Date and Time
+                        if (otherUpdates.start_date && otherUpdates.start_time) {
+                            otherUpdates.start_date = `${otherUpdates.start_date.split('T')[0]}T${otherUpdates.start_time}:00`;
+                        }
+                        if (otherUpdates.due_date && otherUpdates.due_time) {
+                            otherUpdates.due_date = `${otherUpdates.due_date.split('T')[0]}T${otherUpdates.due_time}:00`;
+                        }
+
+                        // Remove helper fields
+                        delete (otherUpdates as any).start_time;
+                        delete (otherUpdates as any).due_time;
+
                         const { error } = await supabase.from('tasks').update(otherUpdates).eq('id', task_id);
                         if (!error) didMutate = true;
                         result = error ? { error: error.message } : { success: true };

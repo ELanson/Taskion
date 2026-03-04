@@ -332,8 +332,26 @@ export default async function handler(req: any, res: any) {
 
                 const tools: Record<string, (args: any) => Promise<any>> = {
                     create_task: async (a) => {
-                        const taskData = { ...sanitize(a), user_id: userId };
-                        if (taskData.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskData.project_id)) {
+                        const args = sanitize(a);
+                        // Merge date and time if both provided
+                        if (args.start_date && args.start_time) {
+                            args.start_date = `${args.start_date.split('T')[0]}T${args.start_time}:00`;
+                        } else if (args.start_time) {
+                            args.start_date = `${new Date().toISOString().split('T')[0]}T${args.start_time}:00`;
+                        }
+
+                        if (args.due_date && args.due_time) {
+                            args.due_date = `${args.due_date.split('T')[0]}T${args.due_time}:00`;
+                        } else if (args.due_time) {
+                            args.due_date = `${new Date().toISOString().split('T')[0]}T${args.due_time}:00`;
+                        }
+
+                        // Remove helper fields before DB insert
+                        delete args.start_time;
+                        delete args.due_time;
+
+                        const taskData = { ...args, user_id: userId };
+                        if (taskData.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskData.project_id)) {
                             const { data: proj } = await supabase.from('projects').select('id').ilike('name', taskData.project_id.trim()).is('deleted_at', null).limit(1).single();
                             if (proj) taskData.project_id = proj.id;
                             else {
@@ -350,7 +368,20 @@ export default async function handler(req: any, res: any) {
                         const updates = sanitize(a);
                         const { task_id } = updates;
                         delete (updates as any).task_id;
-                        if (updates.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.project_id)) {
+
+                        // Merge date and time if provided
+                        if (updates.start_date && updates.start_time) {
+                            updates.start_date = `${updates.start_date.split('T')[0]}T${updates.start_time}:00`;
+                        }
+                        if (updates.due_date && updates.due_time) {
+                            updates.due_date = `${updates.due_date.split('T')[0]}T${updates.due_time}:00`;
+                        }
+
+                        // Remove helper fields
+                        delete updates.start_time;
+                        delete updates.due_time;
+
+                        if (updates.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.project_id)) {
                             const { data: proj } = await supabase.from('projects').select('id').ilike('name', updates.project_id.trim()).is('deleted_at', null).limit(1).single();
                             if (proj) updates.project_id = proj.id;
                             else delete updates.project_id;
