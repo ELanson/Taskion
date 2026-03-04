@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
   MessageSquare,
@@ -33,19 +33,58 @@ import {
   ChevronUp,
   ExternalLink,
   History,
-  CalendarDays
+  CalendarDays,
+  Users,
+  LifeBuoy,
+  Bell,
+  FileText,
+  Flame,
+  Zap,
+  Activity,
+  Target,
+  Search,
+  PieChart,
+  LineChart,
+  Brain,
+  Timer,
+  TrendingDown,
+  Square
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 import { useAppStore, Task, Project, Message } from './store/useAppStore';
 import { supabase } from './lib/supabase';
 import { chatWithLocalModel, parseTaskFromPrompt } from './lib/localAi';
+import { routeMessage } from './lib/aiRouter';
 import Auth from './components/Auth';
+import { TeamStructure } from './components/TeamStructure';
+import { TeamAnalytics } from './components/TeamAnalytics';
+import { AICommandCenter } from './components/AICommandCenter';
+import { WorkspaceSettings } from './components/WorkspaceSettings';
+import { TeamInsights } from './components/TeamInsights';
+import { FocusAssistant } from './components/FocusAssistant';
+import { ReportsDashboard } from './components/ReportsDashboard';
+import { ReportBuilderModal } from './components/ReportBuilderModal';
+import { ReportViewer } from './components/ReportViewer';
+import { SupportHub } from './components/SupportHub';
+import { UserProfileMenu } from './components/UserProfileMenu';
+import {
+  TotalTimeModal, TasksCompletedModal, ActiveTasksModal,
+  FocusScoreModal, ConsistencyModal
+} from './components/DashboardCardModals';
+import { PomodoroWidget } from './components/PomodoroWidget';
+import { ChatHistoryDrawer } from './components/ChatHistoryDrawer';
+import { FocusModeModal } from './components/FocusModeModal';
+import { EisenhowerMatrix } from './components/EisenhowerMatrix';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 export default function App() {
   const {
     tasks, setEditingTask,
     projects,
+    teams,
+    allProfiles, setAllProfiles,
     totalHours,
     messages, setMessages,
     input, setInput,
@@ -59,6 +98,7 @@ export default function App() {
     editingProject, setEditingProject,
     selectedTaskIdForTimeLog, setSelectedTaskIdForTimeLog,
     isSettingsModalOpen, setIsSettingsModalOpen,
+    isWorkspaceSettingsModalOpen, setIsWorkspaceSettingsModalOpen,
     isThroneModalOpen, setIsThroneModalOpen,
     isDarkMode, toggleDarkMode,
     userProfile, setUserProfile,
@@ -73,15 +113,84 @@ export default function App() {
     isSidebarOpen, setIsSidebarOpen,
     inviteUser, resetUserPassword, toggleUserAdmin,
     initializeAuth, signOut,
-    fetchData
+    fetchData, saveChatSession,
+    mainChatSessions, activeMainChatId, isChatHistoryOpen, setIsChatHistoryOpen, createNewChatSession, loadChatSession,
+    deleteChatSession, renameChatSession, deleteAllChatSessions,
+    timeLogs, workspaceSettings, setIsReportBuilderOpen, setActiveReportTemplate
   } = useAppStore();
 
+  const { focusScore, focusLabel, streakCount, streakDaysUI } = useMemo(() => {
+    if (!timeLogs || !tasks) return { focusScore: 0, focusLabel: 'Need more data', streakCount: 0, streakDaysUI: [] };
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Collect dates with activity
+    const activityDates = new Set<string>();
+    timeLogs.forEach((log: any) => { if (log.date) activityDates.add(log.date); });
+    tasks.forEach((t: any) => {
+      if (t.status === 'done' && t.updated_at) {
+        activityDates.add(new Date(t.updated_at).toISOString().split('T')[0]);
+      }
+    });
+
+    // Calculate streak
+    let currentStreak = 0;
+    const checkDate = new Date(today);
+    const todayStr = checkDate.toISOString().split('T')[0];
+    checkDate.setDate(checkDate.getDate() - 1);
+    const yesterdayStr = checkDate.toISOString().split('T')[0];
+
+    if (activityDates.has(todayStr) || activityDates.has(yesterdayStr)) {
+      let runDate = new Date(activityDates.has(todayStr) ? todayStr : yesterdayStr);
+      while (activityDates.has(runDate.toISOString().split('T')[0])) {
+        currentStreak++;
+        runDate.setDate(runDate.getDate() - 1);
+      }
+    }
+
+    // Last 7 days for mini-chart
+    const dayLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    const last7 = [];
+    const tempDate = new Date(today);
+    tempDate.setDate(tempDate.getDate() - 6);
+    for (let i = 0; i < 7; i++) {
+      last7.push({
+        active: activityDates.has(tempDate.toISOString().split('T')[0]),
+        label: dayLabels[tempDate.getDay()]
+      });
+      tempDate.setDate(tempDate.getDate() + 1);
+    }
+
+    // Calculate dynamic focus score based on today's efforts
+    const tasksDoneToday = tasks.filter((t: any) => t.status === 'done' && t.updated_at?.startsWith(todayStr)).length;
+    const hoursToday = timeLogs.filter((l: any) => l.date === todayStr).reduce((acc: number, l: any) => acc + (l.hours || 0), 0);
+
+    let score = 40 + (tasksDoneToday * 15) + (hoursToday * 8) + (currentStreak * 2);
+    if (score > 100) score = 100;
+    if (tasksDoneToday === 0 && hoursToday === 0) {
+      score = currentStreak > 0 ? 45 : 0;
+    }
+
+    let label = 'Needs focus';
+    if (score >= 90) label = 'Flow State';
+    else if (score >= 75) label = 'Excellent focus';
+    else if (score >= 50) label = 'Good productivity';
+    else if (score > 0) label = 'Warming up';
+
+    return { focusScore: score, focusLabel: label, streakCount: currentStreak, streakDaysUI: last7 };
+  }, [timeLogs, tasks]);
+
   const [inviteEmail, setInviteEmail] = useState('');
-  const [allProfiles, setAllProfiles] = useState<any[]>([]);
   const [isAdminPanelLoading, setIsAdminPanelLoading] = useState(false);
+  const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
+  const [isWorkspaceInfoOpen, setIsWorkspaceInfoOpen] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [aiTaskPrompt, setAiTaskPrompt] = useState('');
   const [newSubtask, setNewSubtask] = useState('');
+  const [activeDashCard, setActiveDashCard] = useState<'time' | 'completed' | 'active' | 'focus' | 'streak' | null>(null);
+  const [isFocusModeOpen, setIsFocusModeOpen] = useState(false);
+  const [tasksView, setTasksView] = useState<'all' | 'matrix'>('all');
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -92,6 +201,13 @@ export default function App() {
     };
   }, [initializeAuth]);
 
+  // Continuously sync main AI Chat History to cloud DB
+  useEffect(() => {
+    if (user && messages.length > 1) {
+      saveChatSession('main', messages);
+    }
+  }, [messages, user, saveChatSession]);
+
   useEffect(() => {
     // Fetch profiles whenever the task modal or throne modal opens (or on initial admin check)
     if (isModalOpen || (isThroneModalOpen && isAdmin)) {
@@ -100,12 +216,9 @@ export default function App() {
   }, [isModalOpen, isThroneModalOpen, isAdmin]);
 
   const fetchProfiles = async () => {
-    setIsAdminPanelLoading(true);
-    const { data, error } = await supabase.from('profiles').select('*').order('full_name');
-    if (!error) setAllProfiles(data || []);
-    setIsAdminPanelLoading(false);
+    // Relying on the global store for this now to prevent disparate state issues
+    // Just a placeholder to avoid breaking the useEffect below if it references this
   };
-
   const handleInviteUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail) return;
@@ -151,6 +264,19 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Auto-calculate estimated hours when start and due dates are populated
+  useEffect(() => {
+    if (formData.start_date && formData.due_date) {
+      const start = new Date(formData.start_date).getTime();
+      const end = new Date(formData.due_date).getTime();
+      if (!isNaN(start) && !isNaN(end) && end > start) {
+        const diffMs = end - start;
+        const diffHours = parseFloat((diffMs / (1000 * 60 * 60)).toFixed(2));
+        setFormData(prev => ({ ...prev, estimated_hours: diffHours }));
+      }
+    }
+  }, [formData.start_date, formData.due_date, setFormData]);
 
   const handleOpenModal = (task?: Task) => {
     if (projects.length === 0) {
@@ -224,12 +350,25 @@ export default function App() {
       return;
     }
 
+    const payloadToSave = { ...formData };
+
+    // Hard fallback: If a Contributor's locked dropdown somehow cleared the ID, inject it explicitly
+    if (userProfile?.global_role === 'Contributor' && !payloadToSave.assignee_id) {
+      payloadToSave.assignee_id = user?.id || '';
+    }
+
+    // Supabase strict typing: convert empty frontend strings to actual DB nulls
+    if (payloadToSave.assignee_id === '') payloadToSave.assignee_id = null as any;
+    if (payloadToSave.due_date === '') payloadToSave.due_date = null as any;
+    if (payloadToSave.start_date === '') payloadToSave.start_date = null as any;
+    if (payloadToSave.project_id === 0) payloadToSave.project_id = null as any;
+
     try {
       let res;
       if (editingTask) {
-        res = await supabase.from('tasks').update(formData).eq('id', editingTask.id);
+        res = await supabase.from('tasks').update(payloadToSave).eq('id', editingTask.id);
       } else {
-        res = await supabase.from('tasks').insert([formData]);
+        res = await supabase.from('tasks').insert([payloadToSave]);
       }
 
       if (!res.error) {
@@ -325,6 +464,18 @@ export default function App() {
     }
   };
 
+  // AbortController for stopping in-flight AI requests
+  const abortControllerRef = React.useRef<AbortController | null>(null);
+
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setMessages(prev => [...prev, { role: 'assistant', content: '⬛ Response stopped.' }]);
+    setIsLoading(false);
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -334,33 +485,128 @@ export default function App() {
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
+    // Create a fresh AbortController for this request
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
-      if (useLocalModel) {
-        // Send the entire message history to the local model to retain context
-        const responseText = await chatWithLocalModel(
-          [...messages, { role: 'user', content: userMessage }],
-          localModelUrl
-        );
-        setMessages(prev => [...prev, { role: 'assistant', content: responseText }]);
-      } else {
-        // Cloud route (Gemini via Serverless endpoint)
+      let didMutate = false;
+
+      // Route the message: 'agent' = task CRUD (always server), 'cloud' = analytics (if enabled), 'local' = Q&A
+      const route = routeMessage(userMessage, !!workspaceSettings?.cloudAiEnabled, useLocalModel);
+      console.log(`[AI Router] "${userMessage.slice(0, 60)}" → ${route.toUpperCase()}`);
+
+      let finalResponseText = '';
+
+      if (route === 'local') {
+        try {
+          // Local model handles simple Q&A and read-only queries
+          const { text: responseText, didMutate: localMutated } = await chatWithLocalModel(
+            [...messages, { role: 'user', content: userMessage }],
+            localModelUrl,
+            user?.id,
+            userProfile?.global_role
+          );
+          didMutate = localMutated;
+          finalResponseText = responseText;
+        } catch (localError) {
+          console.error('[Local AI Fallback] Error:', localError);
+          // Fallback to cloud agent if local fails
+          const session = (await supabase.auth.getSession()).data.session;
+          const currentUserId = user?.id || session?.user?.id;
+
+          try {
+            const res = await fetch('/api/chat', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session?.access_token || ''}`
+              },
+              body: JSON.stringify({
+                message: userMessage,
+                history: messages.map(m => ({ role: m.role, content: m.content })),
+                userId: currentUserId,
+                userRole: userProfile?.global_role
+              }),
+              signal: controller.signal
+            });
+
+            if (!res.ok) {
+              const errorData = await res.json();
+              throw new Error(errorData.details || errorData.error || 'Cloud API failed');
+            }
+
+            const data = await res.json();
+            finalResponseText = `⚠️ (Local Model unavailable, using Yukime Cloud)\n\n${data.text || 'I processed your request, but returned no text.'}`;
+            didMutate = data.didMutate || false;
+          } catch (cloudError: any) {
+            console.error('[Cloud Fallback Failed]:', cloudError);
+            finalResponseText = `❌ Error: Both Local and Cloud AI are currently unavailable.\n\nDetail: ${cloudError.message}`;
+          }
+        }
+
+        if (!controller.signal.aborted) {
+          setMessages(prev => [...prev, { role: 'assistant', content: finalResponseText }]);
+        }
+      } else if (route === 'agent' || route === 'cloud') {
+        // Both 'agent' and 'cloud' use the server-side Gemini endpoint (/api/chat)
+        // 'agent' = task CRUD mutations (always on, ignores toggle)
+        // 'cloud' = deep analysis/reports (only when cloud enabled — already gated by router)
+        const session = (await supabase.auth.getSession()).data.session;
         const res = await fetch('/api/chat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: userMessage })
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session?.access_token || ''}`
+          },
+          body: JSON.stringify({
+            message: userMessage,
+            history: messages.map(m => ({ role: m.role, content: m.content })),
+            userId: user?.id,
+            userRole: userProfile?.global_role
+          }),
+          signal: controller.signal
         });
+
+        if (!res.ok) {
+          // Server is offline — if it was a task mutation, tell the user clearly
+          if (route === 'agent') {
+            if (!controller.signal.aborted) {
+              setMessages(prev => [...prev, { role: 'assistant', content: "⚠️ The task agent server is currently offline. Please ensure the dev API server (`npx tsx scripts/dev-api.ts`) is running, then try again." }]);
+            }
+          } else {
+            if (!controller.signal.aborted) {
+              setMessages(prev => [...prev, { role: 'assistant', content: "⚠️ Cloud AI is temporarily unavailable. Please try again shortly." }]);
+            }
+          }
+          return;
+        }
+
         const data = await res.json();
-        setMessages(prev => [...prev, { role: 'assistant', content: data.text }]);
+        didMutate = data.didMutate || false;
+        if (!controller.signal.aborted) {
+          setMessages(prev => [...prev, { role: 'assistant', content: data.text || data.error || "Something went wrong." }]);
+        }
       }
 
-      // Show visual refresh cue
-      setIsRefreshing(true);
-      await fetchData();
-      setTimeout(() => setIsRefreshing(false), 1000);
+      if (controller.signal.aborted) return;
 
-    } catch (error) {
+      // Persist the conversation thread
+      const latestMessages = useAppStore.getState().messages;
+      await saveChatSession('main', latestMessages);
+
+      // Refresh task/project data in the UI if the AI performed a mutation
+      if (didMutate) {
+        setIsRefreshing(true);
+        await fetchData();
+        setTimeout(() => setIsRefreshing(false), 2000);
+      }
+
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error processing your request.' }]);
     } finally {
+      abortControllerRef.current = null;
       setIsLoading(false);
     }
   };
@@ -381,79 +627,185 @@ export default function App() {
     <div className={`flex h-screen ${isDarkMode ? 'dark bg-[#0A0A0B] text-gray-100' : 'bg-[#F8F9FA] text-[#1A1A1A]'} font-sans overflow-hidden transition-colors duration-300`}>
       <div className="flex w-full h-full bg-inherit">
         {/* Sidebar */}
+        {/* Sidebar */}
         <aside className={`
         fixed inset-y-0 left-0 z-50 w-64 ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-200'} border-r flex flex-col transition-transform duration-300 transform
         lg:translate-x-0 lg:static lg:inset-0
         ${isNavOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
-          <div className={`p-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-100'} flex items-center justify-between`}>
+          {/* Top Logo */}
+          <div className={`p-6 pb-4 flex items-center justify-between`}>
             <div className="flex items-center gap-2 text-indigo-500 font-bold text-xl">
-              <img src={isDarkMode ? "/Taskion Logo 192px invert.png" : "/Taskion Logo 192px.png"} className="w-8 h-8 object-contain" alt="Taskion" />
-              <span className={isDarkMode ? 'text-white' : 'text-indigo-600'}>Taskion</span>
+              <img src={isDarkMode ? "/TICKEL Logo 192px invert.png" : "/TICKEL Logo 192px.png"} className="w-8 h-8 object-contain" alt="TICKEL" />
+              <div className="flex flex-col">
+                <span className={`${isDarkMode ? 'text-white' : 'text-indigo-600'} leading-none`}>TICKEL</span>
+                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-widest mt-0.5">
+                  By <a href="https://rickelindustries.co.ke/" target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-indigo-500 transition-colors">Rickel Industries</a>
+                </span>
+              </div>
             </div>
             <button onClick={() => setIsNavOpen(false)} className={`lg:hidden p-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
               <Plus size={20} className="rotate-45" />
             </button>
           </div>
 
-          <nav className="flex-1 p-4 space-y-2">
+          {/* Workspace Selector */}
+          <div className="px-4 mb-6 relative">
+            <button
+              onClick={() => setIsWorkspaceInfoOpen(!isWorkspaceInfoOpen)}
+              className={`w-full flex items-center justify-between p-3 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800 hover:border-emerald-500/50' : 'bg-gray-50 border-gray-200 hover:border-emerald-500/50'} transition-all group`}
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-colors">
+                  <Sparkles size={16} />
+                </div>
+                <div className="text-left">
+                  <p className="text-[10px] uppercase text-gray-500 font-bold tracking-wider">Team Workspace</p>
+                  <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>Rickel Industries</p>
+                </div>
+              </div>
+              <ChevronDown size={14} className={`text-gray-500 transition-transform ${isWorkspaceInfoOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            <AnimatePresence>
+              {isWorkspaceInfoOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className={`absolute top-16 left-4 right-4 z-50 p-2 rounded-xl shadow-xl border ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-200'} text-xs`}
+                >
+                  <button
+                    onClick={() => { setIsWorkspaceSettingsModalOpen(true); setIsWorkspaceInfoOpen(false); }}
+                    className={`w-full flex items-center justify-between p-2.5 rounded-lg mb-2 transition-colors ${isDarkMode ? 'hover:bg-gray-800/50 text-gray-200' : 'hover:bg-gray-50 text-gray-700'}`}
+                  >
+                    <span className="font-bold flex items-center gap-2">
+                      <Settings size={14} className={isDarkMode ? 'text-gray-400' : 'text-gray-500'} />
+                      Workspace Settings
+                    </span>
+                    <span className="text-[10px] bg-indigo-500/10 text-indigo-500 px-1.5 py-0.5 rounded font-bold">Admin</span>
+                  </button>
+
+                  <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-[#1a1c1d]' : 'bg-gray-50'}`}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <AlertCircle size={14} className="text-indigo-500" />
+                      <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Workspace & Hierarchy</span>
+                    </div>
+                    <p className={`mb-2 leading-relaxed text-[11px] ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      A <strong>Workspace</strong> (like Rickel Industries) encapsulates your entire organization. Inside a Workspace, you have <strong>Departments</strong> (e.g., Engineering), and within those are specific <strong>Teams</strong> (e.g., Frontend).
+                    </p>
+                    <p className={`leading-relaxed text-[11px] ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Your permissions and task visibility are scoped to your assigned Team and Department based on your global Role.
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <button
+              onClick={() => setIsSearchModalOpen(true)}
+              className={`mt-3 w-full flex items-center gap-2 px-3 py-2 rounded-lg ${isDarkMode ? 'bg-gray-800/30 text-gray-400 hover:bg-gray-800/60 hover:text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-900'} text-xs font-medium cursor-pointer transition-colors border border-transparent ${isDarkMode ? 'hover:border-gray-700' : 'hover:border-gray-300'}`}
+            >
+              <Search size={14} />
+              <span>Search for tasks, projects...</span>
+              <div className={`ml-auto px-1.5 py-0.5 rounded border ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} text-[9px] font-bold`}>⌘F</div>
+            </button>
+          </div>
+
+          <div className="px-6 mb-2">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Navigation</p>
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
             <button
               onClick={() => { setActiveTab('dashboard'); setIsNavOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? (isDarkMode ? 'bg-indigo-500/10 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-50')}`}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
             >
-              <LayoutDashboard size={20} />
-              <span className="font-medium">Dashboard</span>
+              <LayoutDashboard size={18} />
+              <span className="font-medium text-sm">Dashboard</span>
             </button>
             <button
-              onClick={() => { setActiveTab('tasks'); setIsNavOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'tasks' ? (isDarkMode ? 'bg-indigo-500/10 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-50')}`}
+              onClick={() => { setActiveTab('analytics'); setIsNavOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'analytics' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
             >
-              <CheckCircle2 size={20} />
-              <span className="font-medium">My Tasks</span>
+              <BarChart3 size={18} />
+              <span className="font-medium text-sm">Analytics</span>
+            </button>
+            <button
+              onClick={() => { setActiveTab('team'); setIsNavOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'team' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
+            >
+              <Users size={18} />
+              <span className="font-medium text-sm">Team Structure</span>
             </button>
             <button
               onClick={() => { setActiveTab('reports'); setIsNavOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? (isDarkMode ? 'bg-indigo-500/10 text-indigo-400' : 'bg-indigo-50 text-indigo-600') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-50')}`}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
             >
-              <BarChart3 size={20} />
-              <span className="font-medium">Intelligence</span>
+              <div className="flex items-center gap-3">
+                <FileText size={18} />
+                <span className="font-medium text-sm">Reports</span>
+              </div>
+              <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center text-[10px] font-bold">1</span>
+            </button>
+            <button
+              onClick={() => { setActiveTab('support'); setIsNavOpen(false); }}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all ${activeTab === 'support' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
+            >
+              <div className="flex items-center gap-3">
+                <LifeBuoy size={18} />
+                <span className="font-medium text-sm">Support</span>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold">New</span>
+            </button>
+
+            {/* Separator and My Tasks */}
+            <div className={`my-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}></div>
+            <button
+              onClick={() => { setActiveTab('tasks'); setIsNavOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'tasks' ? (isDarkMode ? 'bg-[#1a1c1d] text-emerald-400' : 'bg-gray-900 text-emerald-400') : (isDarkMode ? 'text-emerald-500 hover:bg-gray-800/50 hover:text-emerald-400' : 'text-emerald-600 hover:bg-emerald-50')} border border-transparent`}
+            >
+              <CheckCircle2 size={18} />
+              <span className="font-medium text-sm">My Tasks</span>
             </button>
           </nav>
 
-          <div className={`p-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
-            <button
-              onClick={() => { setIsSettingsModalOpen(true); setIsNavOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-50'} mb-4`}
-            >
-              <Settings size={20} />
-              <span className="font-medium">Settings</span>
-            </button>
-
+          {/* Bottom Settings / Throne */}
+          <div className={`p-4 mt-auto border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
             {isAdmin && (
               <button
                 onClick={() => { setIsThroneModalOpen(true); setIsNavOpen(false); }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isDarkMode ? 'text-indigo-400 hover:bg-gray-800' : 'text-indigo-600 hover:bg-indigo-50'} mb-4`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isDarkMode ? 'text-indigo-400 hover:bg-gray-800/50' : 'text-indigo-600 hover:bg-indigo-50'} mb-1`}
               >
-                <Shield size={20} />
-                <span className="font-medium">Throne</span>
+                <Shield size={18} />
+                <span className="font-medium text-sm">Throne</span>
               </button>
             )}
+            <button
+              onClick={() => { setIsSettingsModalOpen(true); setIsNavOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100'} mb-6`}
+            >
+              <Settings size={18} />
+              <span className="font-medium text-sm">Settings</span>
+            </button>
 
-            <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl p-4 text-white shadow-lg shadow-indigo-500/20">
-              <p className="text-xs font-medium opacity-80 uppercase tracking-wider mb-1">Pro Plan</p>
-              <p className="text-sm font-bold mb-3">AI Insights Active</p>
-              <div className="h-1 bg-white/20 rounded-full overflow-hidden">
-                <div className="h-full bg-white w-3/4"></div>
-              </div>
+            <div className="px-2 mb-2">
+              <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">User Account</p>
             </div>
 
-            <button
-              onClick={() => signOut()}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isDarkMode ? 'text-red-400 hover:bg-red-500/10' : 'text-red-600 hover:bg-red-50'} mt-4 font-bold text-sm`}
-            >
-              <ArrowRight className="rotate-180" size={18} />
-              Sign Out
-            </button>
+            <div className={`flex items-center justify-between p-3 rounded-xl ${isDarkMode ? 'bg-[#1a1c1d] border border-gray-800' : 'bg-gray-50 border border-gray-200'}`}>
+              <div className="flex items-center gap-3">
+                <img src={userProfile.avatar_url || `https://picsum.photos/seed/${userProfile.name}/40/40`} className="w-8 h-8 rounded-lg object-cover" alt="User" />
+                <div>
+                  <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'} leading-tight`}>{userProfile.name?.split(' ')[0]} {userProfile.name?.split(' ')[1]}</p>
+                  <p className="text-[10px] text-gray-500">#{user?.id?.slice(0, 8)}</p>
+                </div>
+              </div>
+              <button onClick={() => signOut()} className={`p-1.5 rounded-lg ${isDarkMode ? 'text-gray-500 hover:text-red-400 hover:bg-gray-800' : 'text-gray-400 hover:text-red-500 hover:bg-white'} transition-colors`} title="Sign out">
+                <ArrowRight size={14} className="rotate-180" />
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -503,22 +855,7 @@ export default function App() {
               </AnimatePresence>
 
               {/* User Profile Section */}
-              <div className={`flex items-center gap-3 pr-4 border-r ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
-                <div className="text-right hidden sm:block">
-                  <div className="flex items-center justify-end gap-2">
-                    {isAdmin && (
-                      <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-[10px] font-bold text-indigo-500 uppercase tracking-tighter">
-                        Admin
-                      </span>
-                    )}
-                    <p className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{userProfile.name}</p>
-                  </div>
-                  <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Productivity Pro</p>
-                </div>
-                <div className={`w-10 h-10 rounded-xl border-2 ${isDarkMode ? 'border-indigo-500/30' : 'border-white'} bg-gray-200 overflow-hidden shadow-sm`}>
-                  <img src={userProfile.avatar_url || `https://picsum.photos/seed/${userProfile.name}/40/40`} alt="user" referrerPolicy="no-referrer" />
-                </div>
-              </div>
+              <UserProfileMenu />
 
               <button
                 onClick={() => toggleDarkMode()}
@@ -554,107 +891,318 @@ export default function App() {
           <div className={`flex-1 overflow-y-auto p-8 ${isDarkMode ? 'bg-[#0A0A0B]' : 'bg-[#F8F9FA]'}`}>
             {activeTab === 'dashboard' && (
               <div className="space-y-8">
-                {/* Stats Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} p-6 rounded-2xl border shadow-sm`}>
-                    <div className="flex items-center justify-between mb-4">
-                      <div className={`p-2 ${isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600'} rounded-lg`}>
-                        <Clock size={20} />
-                      </div>
-                      <span className="text-xs font-medium text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded-full">+12%</span>
+                {/* 5-Metric Cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+
+                  {/* Card 1: Total Time */}
+                  <button onClick={() => setActiveDashCard('time')} className="bg-[#1a1c1d] p-5 rounded-[20px] border border-gray-800 shadow-lg relative overflow-hidden group text-left hover:border-emerald-500/30 hover:shadow-emerald-500/10 transition-all cursor-pointer">
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl -mr-8 -mt-8"></div>
+                    <p className="text-gray-400 text-xs font-medium tracking-wide mb-4">Total Time Today</p>
+                    <div className="flex items-end gap-2 relative z-10">
+                      <p className="text-3xl font-black text-white tracking-tight">{totalHours}</p>
+                      <p className="text-emerald-400 text-sm font-bold mb-1">hrs</p>
                     </div>
-                    <h3 className="text-gray-500 text-sm font-medium">Total Hours</h3>
-                    <p className={`text-2xl font-bold mt-1 ${isDarkMode ? 'text-white' : ''}`}>{totalHours}h</p>
-                  </div>
-                  <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} p-6 rounded-2xl border shadow-sm`}>
-                    {(() => {
-                      const now = new Date();
-                      const startOfWeek = new Date(now);
-                      startOfWeek.setHours(0, 0, 0, 0);
-                      startOfWeek.setDate(now.getDate() - now.getDay());
-                      const endOfWeek = new Date(startOfWeek);
-                      endOfWeek.setDate(startOfWeek.getDate() + 7);
-                      const dueThisWeek = (Array.isArray(tasks) ? tasks : []).filter(t => {
-                        if (!t.due_date) return false;
-                        const due = new Date(t.due_date);
-                        return due >= startOfWeek && due < endOfWeek && t.status !== 'done';
-                      }).length;
-                      const isOverdue = dueThisWeek > 5;
-                      return (
-                        <>
-                          <div className="flex items-center justify-between mb-4">
-                            <div className={`p-2 ${isDarkMode ? 'bg-purple-500/10 text-purple-400' : 'bg-purple-50 text-purple-600'} rounded-lg`}>
-                              <CalendarDays size={20} />
-                            </div>
-                            <span className={`text-xs font-medium px-2 py-1 rounded-full ${isOverdue ? 'text-red-500 bg-red-500/10' : 'text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10'}`}>
-                              {isOverdue ? 'Busy' : 'On Track'}
-                            </span>
+                    <div className="mt-3 flex items-end gap-1 h-8">
+                      {[40, 70, 45, 90, 60, 30, 80].map((h, i) => (
+                        <div key={i} className="flex-1 bg-emerald-500/80 rounded-t-sm transition-all group-hover:bg-emerald-400" style={{ height: `${h}%` }}></div>
+                      ))}
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-emerald-500/0 via-emerald-500/60 to-emerald-500/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+
+                  {/* Card 2: Tasks Completed */}
+                  <button onClick={() => setActiveDashCard('completed')} className={`${isDarkMode ? 'bg-[#121214] border-gray-800 hover:border-indigo-500/30' : 'bg-white border-gray-100 hover:border-indigo-400/30'} p-5 rounded-[20px] border shadow-sm flex flex-col justify-between text-left transition-all cursor-pointer group relative overflow-hidden`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <p className="text-gray-500 text-xs font-medium tracking-wide">Tasks Completed</p>
+                      <CheckCircle2 size={16} className={isDarkMode ? 'text-gray-600 group-hover:text-indigo-400 transition-colors' : 'text-gray-300'} />
+                    </div>
+                    <div>
+                      <p className={`text-4xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-1`}>{(Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'done').length}</p>
+                      <span className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded-full inline-block">+2 from yesterday</span>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-indigo-500/0 via-indigo-500/60 to-indigo-500/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+
+                  {/* Card 3: Active Tasks */}
+                  <button onClick={() => setActiveDashCard('active')} className={`${isDarkMode ? 'bg-gradient-to-br from-indigo-900/40 to-[#121214] border-indigo-500/20 hover:border-indigo-500/50' : 'bg-gradient-to-br from-indigo-50 to-white border-indigo-100 hover:border-indigo-300'} p-5 rounded-[20px] border shadow-sm flex flex-col justify-between text-left transition-all cursor-pointer group relative overflow-hidden`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <p className={`${isDarkMode ? 'text-indigo-300' : 'text-indigo-600'} text-xs font-medium tracking-wide`}>Active Tasks</p>
+                      <Activity size={16} className={isDarkMode ? 'text-indigo-400' : 'text-indigo-500'} />
+                    </div>
+                    <div>
+                      <p className={`text-4xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-indigo-900'} mb-1`}>{(Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'in_progress').length}</p>
+                      <span className={`text-[10px] font-bold ${isDarkMode ? 'text-indigo-300' : 'text-indigo-500'} uppercase tracking-widest`}>In Progress</span>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-indigo-500/0 via-indigo-500 to-indigo-500/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+
+                  {/* Card 4: Focus Score */}
+                  <button onClick={() => setActiveDashCard('focus')} className={`${isDarkMode ? 'bg-[#121214] border-gray-800 hover:border-amber-500/30' : 'bg-white border-gray-100 hover:border-amber-400/30'} p-5 rounded-[20px] border shadow-sm col-span-2 lg:col-span-1 relative overflow-hidden flex flex-col justify-between group transition-all cursor-pointer text-left`}>
+                    <div className="flex items-center justify-between relative z-10 mb-2">
+                      <p className="text-gray-500 text-xs font-medium tracking-wide">Focus Score</p>
+                      <Target size={16} className="text-amber-500" />
+                    </div>
+                    <div className="relative z-10">
+                      <div className="flex items-baseline gap-1 mt-2">
+                        <p className={`text-4xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{focusScore.toFixed(1)}</p>
+                        <p className="text-sm font-bold text-gray-500">/100</p>
+                      </div>
+                      <p className="text-[10px] text-amber-500 font-bold mt-1">{focusLabel}</p>
+                    </div>
+                    <div className="absolute -bottom-4 left-0 right-0 h-16 opacity-20 pointer-events-none flex items-end">
+                      <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="w-full h-full text-amber-500 fill-current">
+                        <path d="M0,40 L0,20 Q10,10 20,20 T40,20 T60,20 T80,20 T100,20 L100,40 Z"></path>
+                      </svg>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-amber-500/0 via-amber-500/60 to-amber-500/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+
+                  {/* Card 5: Streak */}
+                  <button onClick={() => setActiveDashCard('streak')} className={`${isDarkMode ? 'bg-[#121214] border-gray-800 hover:border-orange-500/30' : 'bg-white border-gray-100 hover:border-orange-400/30'} p-5 rounded-[20px] border shadow-sm col-span-2 lg:col-span-1 flex flex-col justify-between group transition-all cursor-pointer text-left relative overflow-hidden`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <p className="text-gray-500 text-xs font-medium tracking-wide">Consistency</p>
+                      <div className="w-6 h-6 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500">
+                        <Flame size={14} />
+                      </div>
+                    </div>
+                    <div className="flex items-end justify-between mt-2">
+                      <div>
+                        <p className={`text-4xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-1`}>{streakCount}</p>
+                        <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Day Streak</p>
+                      </div>
+                      <div className="flex gap-1 mb-1">
+                        {streakDaysUI.map((day, i) => (
+                          <div key={i} className="flex flex-col items-center gap-1">
+                            <div className={`w-2.5 h-2.5 rounded-full ${day.active ? 'bg-orange-500' : (isDarkMode ? 'bg-gray-800' : 'bg-gray-200')}`}></div>
+                            <span className="text-[8px] font-bold text-gray-500">{day.label}</span>
                           </div>
-                          <h3 className="text-gray-500 text-sm font-medium">Due This Week</h3>
-                          <p className={`text-2xl font-bold mt-1 ${isDarkMode ? 'text-white' : ''}`}>{dueThisWeek} Tasks</p>
-                        </>
-                      );
-                    })()}
-                  </div>
-                  <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} p-6 rounded-2xl border shadow-sm`}>
-                    <div className="flex items-center justify-between mb-4">
-                      <div className={`p-2 ${isDarkMode ? 'bg-orange-500/10 text-orange-400' : 'bg-orange-50 text-orange-600'} rounded-lg`}>
-                        <CheckCircle2 size={20} />
+                        ))}
                       </div>
-                      <span className="text-xs font-medium text-gray-400">Target: 10</span>
                     </div>
-                    <h3 className="text-gray-500 text-sm font-medium">Tasks Completed</h3>
-                    <p className={`text-2xl font-bold mt-1 ${isDarkMode ? 'text-white' : ''}`}>{(Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'done').length}</p>
-                  </div>
+                    <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-orange-500/0 via-orange-500/60 to-orange-500/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
                 </div>
 
-                {/* Recent Tasks */}
-                <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-2xl border shadow-sm overflow-hidden`}>
-                  <div className={`p-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-50'} flex items-center justify-between`}>
-                    <h3 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Recent Tasks</h3>
-                    <button
-                      onClick={() => setActiveTab('tasks')}
-                      className="text-indigo-500 text-sm font-medium hover:underline cursor-pointer"
-                    >
-                      View All
-                    </button>
-                  </div>
-                  <div className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-50'}`}>
-                    {(Array.isArray(tasks) ? tasks : []).slice(0, 5).map(task => (
-                      <div
-                        key={task.id}
-                        onClick={() => handleOpenModal(task)}
-                        className={`${isDarkMode ? 'hover:bg-gray-800/10' : 'hover:bg-gray-50'} p-4 transition-colors flex items-center justify-between group cursor-pointer`}
-                      >
-                        <div className="flex items-center gap-4">
-                          <div className={`w-2 h-2 rounded-full ${task.status === 'done' ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
-                          <div>
-                            <p className={`font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>{task.title}</p>
-                            <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
-                              <Briefcase size={12} /> {task.project_name}
-                            </p>
+                {/* Dashboard Card Modals */}
+                <AnimatePresence>
+                  {activeDashCard === 'time' && <TotalTimeModal onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'completed' && <TasksCompletedModal onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'active' && <ActiveTasksModal onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'focus' && <FocusScoreModal onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'streak' && <ConsistencyModal onClose={() => setActiveDashCard(null)} />}
+                </AnimatePresence>
+
+                {/* Dual-Column Main Content Grid */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+                  {/* LEFT COLUMN: Primary Work Area */}
+                  <div className="lg:col-span-2 space-y-6">
+                    {/* 1. Recent Tasks Card */}
+                    <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-[20px] border shadow-sm overflow-hidden`}>
+                      <div className={`px-8 py-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-50'} flex items-center justify-between`}>
+                        <h3 className={`font-bold tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Recent Tasks</h3>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleOpenModal()}
+                            className={`text-xs font-bold px-4 py-2 rounded-full ${isDarkMode ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-indigo-600 hover:bg-indigo-700'} text-white transition-all flex items-center gap-1.5`}
+                          >
+                            <Plus size={14} /> Add Task
+                          </button>
+                          <button
+                            onClick={() => setActiveTab('tasks')}
+                            className={`text-xs font-bold px-4 py-2 rounded-full ${isDarkMode ? 'bg-[#1a1c1d] text-gray-300 hover:bg-gray-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} transition-all`}
+                          >
+                            All Tasks
+                          </button>
+                        </div>
+                      </div>
+                      <div className="p-2">
+                        {(Array.isArray(tasks) ? tasks : []).slice(0, 5).map(task => (
+                          <div
+                            key={task.id}
+                            onClick={() => handleOpenModal(task)}
+                            className={`${isDarkMode ? 'hover:bg-[#1a1c1d]' : 'hover:bg-gray-50'} p-4 mx-2 my-1 rounded-xl transition-all flex items-center justify-between group cursor-pointer border border-transparent ${isDarkMode ? 'hover:border-gray-800' : 'hover:border-gray-100'}`}
+                          >
+                            <div className="flex items-center gap-5">
+                              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') : (isDarkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-600')}`}>
+                                {task.status === 'done' ? <CheckCircle2 size={20} strokeWidth={2.5} /> : <Clock size={20} strokeWidth={2.5} />}
+                              </div>
+                              <div>
+                                <p className={`font-bold text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>{task.title}</p>
+                                <p className="text-xs text-gray-500 font-medium flex items-center gap-1.5 mt-1">
+                                  <Calendar size={12} /> {task.due_date ? new Date(task.due_date).toLocaleDateString() : 'No Due Date'}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-6">
+                              <div className="flex -space-x-2 hidden sm:flex">
+                                {/* Mock Assignee Avatars */}
+                                <img src={`https://picsum.photos/seed/${task.id}/24/24`} className={`w-6 h-6 rounded-full border-2 ${isDarkMode ? 'border-[#121214]' : 'border-white'} z-10`} alt="Assignee" referrerPolicy="no-referrer" />
+                              </div>
+                              <span className={`text-[10px] uppercase tracking-wider font-bold px-2.5 py-1 rounded-md border ${getPriorityColor(task.priority)}`}>
+                                {task.priority}
+                              </span>
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-gray-800/50' : 'bg-white border shadow-sm'} group-hover:bg-indigo-500 group-hover:text-white group-hover:border-transparent transition-all`}>
+                                <ChevronRight size={14} strokeWidth={3} className={isDarkMode ? 'text-gray-400 group-hover:text-white' : 'text-gray-400 group-hover:text-white'} />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        {tasks.length === 0 && (
+                          <div className="p-12 text-center flex flex-col items-center justify-center">
+                            <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                              <CheckSquare size={24} className={isDarkMode ? 'text-gray-600' : 'text-gray-400'} />
+                            </div>
+                            <p className={`font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>No recent tasks</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 2. Active Tasks */}
+                    <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-[20px] border shadow-sm overflow-hidden`}>
+                      <div className={`px-8 py-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-50'} flex items-center justify-between`}>
+                        <h3 className={`font-bold tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Active Tasks</h3>
+                      </div>
+                      <div className="p-6 space-y-6">
+                        {(Array.isArray(tasks) ? tasks : []).filter(t => t.status === 'in_progress').slice(0, 3).map(task => (
+                          <div key={task.id} className="group">
+                            <div className="flex justify-between items-center mb-2">
+                              <p className={`font-medium text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>{task.title}</p>
+                              <p className="text-xs font-bold text-indigo-500 bg-indigo-500/10 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span> Time running
+                              </p>
+                            </div>
+                            <div className="w-full h-2 bg-gray-200 dark:bg-gray-800 rounded-full overflow-hidden">
+                              <div className="h-full bg-indigo-500 w-1/2 group-hover:w-3/4 transition-all duration-1000 ease-in-out"></div>
+                            </div>
+                          </div>
+                        ))}
+                        {tasks.filter(t => t.status === 'in_progress').length === 0 && (
+                          <p className="text-center text-sm text-gray-500 py-4">No tasks currently in progress.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 3. Activity Timeline */}
+                    <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-[20px] border shadow-sm overflow-hidden`}>
+                      <div className={`px-8 py-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-50'} flex items-center justify-between`}>
+                        <h3 className={`font-bold tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Activity Timeline</h3>
+                      </div>
+                      <div className="p-6 pl-8">
+                        <div className="space-y-6 border-l-2 border-indigo-500/20 pl-6 relative">
+                          {/* Marker 1 */}
+                          <div className="relative">
+                            <span className="absolute -left-[33px] top-0.5 w-4 h-4 rounded-full bg-indigo-500 border-4 border-[#121214]"></span>
+                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>You completed a task</p>
+                            <p className="text-xs text-gray-500 mt-1">"Update dashboard layout" • 2 hours ago</p>
+                          </div>
+                          {/* Marker 2 */}
+                          <div className="relative">
+                            <span className="absolute -left-[33px] top-0.5 w-4 h-4 rounded-full bg-gray-500 dark:bg-gray-700 border-4 border-[#121214]"></span>
+                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>AI generated report</p>
+                            <p className="text-xs text-gray-500 mt-1">Weekly productivity analysis is ready • 5 hours ago</p>
+                          </div>
+                          {/* Marker 3 */}
+                          <div className="relative">
+                            <span className="absolute -left-[33px] top-0.5 w-4 h-4 rounded-full bg-gray-500 dark:bg-gray-700 border-4 border-[#121214]"></span>
+                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>Task updated</p>
+                            <p className="text-xs text-gray-500 mt-1">"Fix database schema" status changed to In Progress • Yesterday</p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${getPriorityColor(task.priority)}`}>
-                            {task.priority}
-                          </span>
-                          <ChevronRight size={16} className="text-gray-300 group-hover:text-gray-500 transition-colors" />
-                        </div>
                       </div>
-                    ))}
-                    {tasks.length === 0 && (
-                      <div className="p-8 text-center text-gray-500">
-                        No tasks found. Use the AI agent to create one!
-                      </div>
+                    </div>
+                  </div>
+
+                  {/* RIGHT COLUMN: AI + Control Panel */}
+                  <div className="space-y-6">
+                    {/* A. Role-Tailored AI Insights (KEY DIFFERENTIATOR) */}
+                    {userProfile?.global_role === 'Global Admin' || isAdmin ? (
+                      <AICommandCenter />
+                    ) : userProfile?.global_role === 'Manager' ? (
+                      <TeamInsights />
+                    ) : (
+                      <FocusAssistant />
                     )}
+
+                    {/* B. Smart Suggestions */}
+                    <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-[20px] border shadow-sm p-6`}>
+                      <h3 className={`font-bold tracking-wide mb-4 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Smart Suggestions</h3>
+                      <div className="space-y-3">
+                        <button className={`w-full flex items-center justify-between p-3 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800 hover:border-gray-600' : 'bg-gray-50 border-gray-200 hover:border-gray-300'} transition-all text-left group`}>
+                          <div>
+                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'} group-hover:text-indigo-500 transition-colors`}>Break tasks into subtasks</p>
+                            <p className="text-xs text-gray-500 mt-0.5">Automated breakdown</p>
+                          </div>
+                          <ChevronRight size={16} className="text-gray-400 group-hover:text-indigo-500" />
+                        </button>
+                        <button className={`w-full flex items-center justify-between p-3 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800 hover:border-gray-600' : 'bg-gray-50 border-gray-200 hover:border-gray-300'} transition-all text-left group`}>
+                          <div>
+                            <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'} group-hover:text-indigo-500 transition-colors`}>Reschedule overloaded day</p>
+                            <p className="text-xs text-gray-500 mt-0.5">Optimize timeline</p>
+                          </div>
+                          <ChevronRight size={16} className="text-gray-400 group-hover:text-indigo-500" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* C. Quick Actions Panel */}
+                    <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-[20px] border shadow-sm p-6`}>
+                      <h3 className={`font-bold tracking-wide mb-4 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Quick Actions</h3>
+                      <div className="grid grid-cols-2 gap-3">
+                        <button onClick={() => handleOpenModal()} className={`col-span-2 flex items-center justify-center gap-2 p-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-lg shadow-indigo-900/20 transition-all`}>
+                          <Plus size={16} /> New Task
+                        </button>
+                        <button onClick={() => { setActiveReportTemplate('daily'); setIsReportBuilderOpen(true); }} className={`flex flex-col items-center justify-center gap-2 p-4 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800 hover:bg-gray-800' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'} transition-all`}>
+                          <FileText size={20} className="text-indigo-500" />
+                          <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Generate Report</span>
+                        </button>
+                        <button onClick={() => setIsFocusModeOpen(true)} className={`flex flex-col items-center justify-center gap-2 p-4 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800 hover:bg-gray-800' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'} transition-all`}>
+                          <Target size={20} className="text-emerald-500" />
+                          <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Focus Mode</span>
+                        </button>
+                      </div>
+                    </div>
+                    {/* C. Pomodoro Timer Widget */}
+                    <PomodoroWidget onOpenFocusMode={() => setIsFocusModeOpen(true)} />
                   </div>
                 </div>
               </div>
             )}
 
+            {activeTab === 'analytics' && (
+              <TeamAnalytics />
+            )}
+
+            {activeTab === 'team' && (
+              <TeamStructure />
+            )}
+
+            {activeTab === 'reports' && (
+              <ReportsDashboard />
+            )}
+
             {activeTab === 'tasks' && (
               <div className="relative">
+                {/* View Tabs */}
+                <div className={`flex items-center gap-2 mb-5`}>
+                  <div className={`flex rounded-xl border p-1 gap-1 ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'}`}>
+                    {(['all', 'matrix'] as const).map(v => (
+                      <button key={v} onClick={() => setTasksView(v)}
+                        className={`px-4 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${tasksView === v
+                          ? 'bg-indigo-600 text-white shadow'
+                          : isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-800'
+                          }`}>
+                        {v === 'all' ? '⊞ All Tasks' : '🎯 Eisenhower Matrix'}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => handleOpenModal()}
+                    className="ml-auto text-xs font-bold px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all flex items-center gap-1.5"
+                  >
+                    <Plus size={14} /> Add Task
+                  </button>
+                </div>
                 <AnimatePresence>
                   {isRefreshing && (
                     <motion.div
@@ -668,84 +1216,90 @@ export default function App() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className={`grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6 pb-20 mt-4 transition-opacity duration-300 ${isRefreshing ? 'opacity-50' : 'opacity-100'}`}>
-                  {(Array.isArray(tasks) ? tasks : []).map(task => (
-                    <motion.div
-                      layout
-                      key={task.id}
-                      className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} p-6 rounded-2xl border shadow-sm hover:shadow-md transition-shadow group relative`}
-                    >
-                      <div className="absolute top-4 right-4 flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-20">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenModal(task);
-                          }}
-                          className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-indigo-400 hover:bg-gray-800' : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'} rounded-lg transition-all cursor-pointer`}
-                        >
-                          <Edit2 size={14} />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteTask(task.id);
-                          }}
-                          className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-red-400 hover:bg-gray-800' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'} rounded-lg transition-all cursor-pointer`}
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                      <div className="flex justify-between items-start mb-4">
-                        <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${getPriorityColor(task.priority)}`}>
-                          {task.priority}
-                        </span>
-                        <span className="text-xs text-gray-500">{new Date(task.created_at).toLocaleDateString()}</span>
-                      </div>
-                      <h4 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-2 pr-12`}>{task.title}</h4>
-                      <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} line-clamp-2 mb-4`}>{task.description}</p>
-                      <div className={`flex items-center justify-between pt-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-50'}`}>
-                        <div className="flex items-center gap-4 text-xs text-gray-500">
-                          <div className="flex items-center gap-1">
-                            <Clock size={14} />
-                            <span>{task.estimated_hours}h est.</span>
-                          </div>
+                {/* Matrix view */}
+                {tasksView === 'matrix' && <EisenhowerMatrix />}
+
+                {/* All tasks (kanban cards) */}
+                {tasksView === 'all' && (
+                  <div className={`grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6 pb-20 mt-4 transition-opacity duration-300 ${isRefreshing ? 'opacity-50' : 'opacity-100'}`}>
+                    {(Array.isArray(tasks) ? tasks : []).map(task => (
+                      <motion.div
+                        layout
+                        key={task.id}
+                        className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} p-6 rounded-2xl border shadow-sm hover:shadow-md transition-shadow group relative`}
+                      >
+                        <div className="absolute top-4 right-4 flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-20">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleOpenTimeLogModal(task.id);
+                              handleOpenModal(task);
                             }}
-                            className="flex items-center gap-1 text-indigo-500 hover:text-indigo-400 font-medium cursor-pointer"
+                            className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-indigo-400 hover:bg-gray-800' : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'} rounded-lg transition-all cursor-pointer`}
                           >
-                            <Plus size={12} /> Log Time
+                            <Edit2 size={14} />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTask(task.id);
+                            }}
+                            className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-red-400 hover:bg-gray-800' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'} rounded-lg transition-all cursor-pointer`}
+                          >
+                            <Trash2 size={14} />
                           </button>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <div className={`px-3 py-1 rounded-full text-xs font-medium ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') :
-                            task.status === 'in_progress' ? (isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600') :
-                              (isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600')
-                            }`}>
-                            {task.status.replace('_', ' ')}
+                        <div className="flex justify-between items-start mb-4">
+                          <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${getPriorityColor(task.priority)}`}>
+                            {task.priority}
+                          </span>
+                          <span className="text-xs text-gray-500">{new Date(task.created_at).toLocaleDateString()}</span>
+                        </div>
+                        <h4 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-2 pr-12`}>{task.title}</h4>
+                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} line-clamp-2 mb-4`}>{task.description}</p>
+                        <div className={`flex items-center justify-between pt-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-50'}`}>
+                          <div className="flex items-center gap-4 text-xs text-gray-500">
+                            <div className="flex items-center gap-1">
+                              <Clock size={14} />
+                              <span>{task.estimated_hours}h est.</span>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenTimeLogModal(task.id);
+                              }}
+                              className="flex items-center gap-1 text-indigo-500 hover:text-indigo-400 font-medium cursor-pointer"
+                            >
+                              <Plus size={12} /> Log Time
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className={`px-3 py-1 rounded-full text-xs font-medium ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') :
+                              task.status === 'in_progress' ? (isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600') :
+                                (isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600')
+                              }`}>
+                              {task.status.replace('_', ' ')}
+                            </div>
                           </div>
                         </div>
+                      </motion.div>
+                    ))}
+                    {tasks.length === 0 && (
+                      <div className="col-span-full py-20 text-center">
+                        <div className={`w-16 h-16 ${isDarkMode ? 'bg-gray-800 text-gray-700' : 'bg-gray-50 text-gray-300'} rounded-2xl flex items-center justify-center mx-auto mb-4`}>
+                          <CheckCircle2 size={32} />
+                        </div>
+                        <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-1`}>No tasks yet</h3>
+                        <p className="text-gray-500 mb-6">Start by creating your first task manually or via AI.</p>
+                        <button
+                          onClick={() => handleOpenModal()}
+                          className="bg-indigo-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-900/20"
+                        >
+                          Create Task
+                        </button>
                       </div>
-                    </motion.div>
-                  ))}
-                  {tasks.length === 0 && (
-                    <div className="col-span-full py-20 text-center">
-                      <div className={`w-16 h-16 ${isDarkMode ? 'bg-gray-800 text-gray-700' : 'bg-gray-50 text-gray-300'} rounded-2xl flex items-center justify-center mx-auto mb-4`}>
-                        <CheckCircle2 size={32} />
-                      </div>
-                      <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-1`}>No tasks yet</h3>
-                      <p className="text-gray-500 mb-6">Start by creating your first task manually or via AI.</p>
-                      <button
-                        onClick={() => handleOpenModal()}
-                        className="bg-indigo-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-900/20"
-                      >
-                        Create Task
-                      </button>
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -808,6 +1362,12 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {activeTab === 'support' && (
+              <div className="max-w-5xl mx-auto">
+                <SupportHub />
+              </div>
+            )}
           </div>
         </main>
 
@@ -820,35 +1380,82 @@ export default function App() {
               exit={{ x: 400 }}
               className={`fixed inset-y-0 right-0 lg:relative w-80 sm:w-96 ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-200'} border-l flex flex-col shadow-2xl z-40 transition-colors duration-300`}
             >
-              <div className={`p-6 border-b ${isDarkMode ? 'border-gray-800 bg-[#1A1A1C]/50' : 'border-gray-100 bg-gray-50/50'} flex items-center justify-between`}>
+              {/* Chat Header */}
+              <div className={`p-6 border-b ${isDarkMode ? 'border-gray-800 bg-[#1A1A1C]/50' : 'border-gray-100 bg-gray-50/50'} flex items-center justify-between sticky top-0 z-10`}>
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                  <button
+                    onClick={() => setIsChatHistoryOpen(!isChatHistoryOpen)}
+                    className={`p-2 rounded-xl border ${isDarkMode ? 'bg-[#121214] border-gray-800 text-gray-400 hover:text-white hover:border-gray-600' : 'bg-white border-gray-200 text-gray-500 hover:text-gray-900'} transition-all`}
+                  >
+                    <History size={18} />
+                  </button>
+                  <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-200 shrink-0">
                     <MessageSquare size={20} />
                   </div>
-                  <div>
-                    <h3 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Work Agent</h3>
+                  <div className="hidden sm:block">
+                    <h3 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} truncate`}>Work Agent</h3>
                     <div className="flex items-center gap-1.5">
                       <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
                       <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Online</span>
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => setIsSidebarOpen(false)}
-                  className="lg:hidden p-2 text-gray-400 hover:text-gray-600"
-                >
-                  <Plus size={20} className="rotate-45" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      createNewChatSession('main');
+                      setIsChatHistoryOpen(false);
+                    }}
+                    className={`p-2 rounded-xl bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 hover:bg-indigo-600 transition-colors shadow-md shadow-indigo-500/20`}
+                    title="New Chat"
+                  >
+                    <Plus size={16} /> <span className="hidden sm:inline">New</span>
+                  </button>
+                  <button
+                    onClick={() => setIsSidebarOpen(false)}
+                    className="lg:hidden p-2 text-gray-400 hover:text-gray-600"
+                  >
+                    <Plus size={20} className="rotate-45" />
+                  </button>
+                </div>
               </div>
+
+              {/* History Drawer Overlay */}
+              {isChatHistoryOpen && (
+                <ChatHistoryDrawer
+                  sessions={mainChatSessions}
+                  activeId={activeMainChatId}
+                  isDarkMode={isDarkMode}
+                  onSelect={async (id) => {
+                    const msgs = await loadChatSession('main', id);
+                    if (msgs) setMessages(msgs.map((m: any) => ({ ...m, timestamp: m.timestamp ? new Date(m.timestamp) : new Date() })));
+                    setIsChatHistoryOpen(false);
+                  }}
+                  onRename={(id, title) => renameChatSession('main', id, title)}
+                  onDelete={(id) => deleteChatSession('main', id)}
+                  onDeleteAll={() => {
+                    if (window.confirm('Delete ALL chat history? This cannot be undone.')) deleteAllChatSessions('main');
+                  }}
+                  onClose={() => setIsChatHistoryOpen(false)}
+                />
+              )}
 
               <div className="flex-1 overflow-y-auto p-6 space-y-6">
                 {messages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[85%] p-4 rounded-2xl text-sm ${msg.role === 'user'
+                    <div className={`max-w-[95%] p-4 rounded-2xl text-sm ${msg.role === 'user'
                       ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-900/20'
                       : `${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-gray-300' : 'bg-white border-gray-100 text-gray-700'} border rounded-tl-none shadow-sm`
                       }`}>
-                      {msg.content}
+                      {msg.role === 'assistant' ? (
+                        <div className={`prose prose-sm max-w-none ${isDarkMode ? 'prose-invert' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        msg.content
+                      )}
                     </div>
                   </div>
                 ))}
@@ -865,20 +1472,44 @@ export default function App() {
 
               <div className={`p-6 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
                 <form onSubmit={handleSendMessage} className="relative">
-                  <input
-                    type="text"
+                  <textarea
+                    ref={(el) => {
+                      if (el) {
+                        el.style.height = 'auto';
+                        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+                      }
+                    }}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder="Ask me to create a task..."
-                    className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-2xl px-5 py-4 pr-14 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage(e as any);
+                      }
+                    }}
+                    placeholder={isLoading ? 'Yukime is thinking...' : 'Ask me to create a task...'}
+                    disabled={isLoading}
+                    rows={1}
+                    className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-2xl px-5 py-4 pr-14 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all disabled:opacity-60 resize-none overflow-hidden`}
                   />
-                  <button
-                    type="submit"
-                    disabled={isLoading || !input.trim()}
-                    className="absolute right-2 top-2 bottom-2 w-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 transition-all"
-                  >
-                    <Send size={18} />
-                  </button>
+                  {isLoading ? (
+                    <button
+                      type="button"
+                      onClick={handleStopGeneration}
+                      title="Stop generation"
+                      className="absolute right-2 top-2 bottom-2 w-10 bg-red-500 text-white rounded-xl flex items-center justify-center hover:bg-red-600 transition-all animate-pulse"
+                    >
+                      <Square size={16} fill="white" />
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={!input.trim()}
+                      className="absolute right-2 top-2 bottom-2 w-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 transition-all"
+                    >
+                      <Send size={18} />
+                    </button>
+                  )}
                 </form>
                 <p className="text-[10px] text-gray-500 text-center mt-4 font-medium uppercase tracking-widest">
                   Powered by Yukime
@@ -976,10 +1607,21 @@ export default function App() {
                             <select
                               value={formData.assignee_id}
                               onChange={e => setFormData(prev => ({ ...prev, assignee_id: e.target.value }))}
-                              className={`w-full pl-12 pr-4 py-3.5 rounded-2xl border-2 appearance-none transition-all ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white focus:border-indigo-500' : 'bg-gray-50 border-gray-100 focus:border-indigo-500'}`}
+                              disabled={userProfile?.global_role === 'Contributor'}
+                              className={`w-full pl-12 pr-4 py-3.5 rounded-2xl border-2 appearance-none transition-all ${userProfile?.global_role === 'Contributor' ? 'opacity-50 cursor-not-allowed ' : ''}${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white focus:border-indigo-500' : 'bg-gray-50 border-gray-100 focus:border-indigo-500'}`}
                             >
                               <option value="">Select Citizen...</option>
-                              {allProfiles.map(p => (
+                              {allProfiles.filter(p => {
+                                const role = userProfile?.global_role;
+                                if (role === 'Global Admin' || role === 'Department Admin' || isAdmin) return true;
+                                if (role === 'Manager') {
+                                  const myTeamIds = new Set(teams.filter(t => t.members?.some((m: any) => m.user_id === user?.id)).map(t => t.id));
+                                  const myDeptIds = new Set(teams.filter(t => myTeamIds.has(t.id)).map(t => t.department_id));
+                                  const allowedTeamIds = new Set(teams.filter(t => myDeptIds.has(t.department_id)).map(t => t.id));
+                                  return teams.some(t => allowedTeamIds.has(t.id) && t.members?.some((m: any) => m.user_id === p.id));
+                                }
+                                return p.id === user?.id; // Contributor
+                              }).map(p => (
                                 <option key={p.id} value={p.id}>{p.full_name || p.email}</option>
                               ))}
                             </select>
@@ -1044,20 +1686,26 @@ export default function App() {
                       </div>
                       <div className="grid grid-cols-3 gap-4">
                         <div>
-                          <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Start Date</label>
+                          <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Start Time</label>
                           <input
-                            type="date"
-                            value={formData.start_date}
-                            onChange={e => setFormData(prev => ({ ...prev, start_date: e.target.value }))}
+                            type="datetime-local"
+                            value={formData.start_date ? (() => {
+                              const d = new Date(formData.start_date);
+                              return isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}T${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+                            })() : ''}
+                            onChange={e => setFormData(prev => ({ ...prev, start_date: e.target.value ? new Date(e.target.value).toISOString() : '' }))}
                             className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white' : 'bg-gray-50 border-gray-100'} border-2 rounded-xl px-4 py-3 text-xs focus:border-indigo-500 transition-all`}
                           />
                         </div>
                         <div>
-                          <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Due Date</label>
+                          <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Due Time</label>
                           <input
-                            type="date"
-                            value={formData.due_date}
-                            onChange={e => setFormData(prev => ({ ...prev, due_date: e.target.value }))}
+                            type="datetime-local"
+                            value={formData.due_date ? (() => {
+                              const d = new Date(formData.due_date);
+                              return isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}T${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+                            })() : ''}
+                            onChange={e => setFormData(prev => ({ ...prev, due_date: e.target.value ? new Date(e.target.value).toISOString() : '' }))}
                             className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white' : 'bg-gray-50 border-gray-100'} border-2 rounded-xl px-4 py-3 text-xs focus:border-indigo-500 transition-all`}
                           />
                         </div>
@@ -1408,7 +2056,53 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
-        {/* Settings Modal */}
+
+        {/* Global Search Modal */}
+        <AnimatePresence>
+          {isSearchModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4 w-full h-full pointer-events-auto">
+              <motion.div
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                onClick={() => setIsSearchModalOpen(false)}
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: -20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -20 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                className={`relative z-10 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col ${isDarkMode ? 'bg-[#161618] border border-gray-800' : 'bg-white border border-gray-200'}`}
+              >
+                <div className={`flex items-center px-4 py-3 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                  <Search size={20} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} />
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder="Ask Yukime AI, or search tasks, projects and people..."
+                    className={`flex-1 bg-transparent border-none outline-none px-4 text-base ${isDarkMode ? 'text-white placeholder-gray-600' : 'text-gray-900 placeholder-gray-400'}`}
+                  />
+                  <div className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer hover:bg-gray-700 transition-colors ${isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-100 text-gray-500'}`} onClick={() => setIsSearchModalOpen(false)}>ESC</div>
+                </div>
+                <div className={`p-4 min-h-[300px] max-h-[60vh] overflow-y-auto ${isDarkMode ? 'bg-[#0e0f10]' : 'bg-gray-50/50'}`}>
+                  <div className="flex flex-col items-center justify-center h-48 text-center text-gray-500">
+                    <Sparkles size={32} className={`mb-3 ${isDarkMode ? 'text-indigo-500/50' : 'text-indigo-400/50'}`} />
+                    <p className="text-sm font-medium text-gray-300">What are you looking for?</p>
+                    <p className="text-xs mt-1 max-w-sm opacity-80">Start typing to search across your workspace, or ask natural language questions to let Yukime find the relevant data.</p>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Global Workspace Settings Modal */}
+        <AnimatePresence>
+          {isWorkspaceSettingsModalOpen && (
+            <WorkspaceSettings onClose={() => setIsWorkspaceSettingsModalOpen(false)} />
+          )}
+        </AnimatePresence>
+
+        {/* Settings Modal (User Level) */}
         <AnimatePresence>
           {isSettingsModalOpen && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1430,31 +2124,6 @@ export default function App() {
                     <Settings size={20} className="text-indigo-500" /> Settings
                   </h3>
                   <div className="space-y-6">
-                    {/* Profile Section */}
-                    <div className="space-y-4 pb-6 border-b border-gray-100 dark:border-gray-800">
-                      <p className={`text-xs font-bold ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} uppercase tracking-widest`}>Profile</p>
-                      <div className="space-y-3">
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 ml-1">Display Name</label>
-                          <input
-                            type="text"
-                            value={userProfile.name}
-                            onChange={e => setUserProfile({ name: e.target.value })}
-                            className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all`}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 ml-1">Avatar URL</label>
-                          <input
-                            type="url"
-                            value={userProfile.avatar_url || ''}
-                            onChange={e => setUserProfile({ avatar_url: e.target.value })}
-                            placeholder="https://example.com/photo.jpg"
-                            className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all`}
-                          />
-                        </div>
-                      </div>
-                    </div>
                     {/* Dark Mode Toggle */}
                     <div className="flex items-center justify-between">
                       <div>
@@ -1468,29 +2137,7 @@ export default function App() {
                         <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isDarkMode ? 'translate-x-6' : 'translate-x-1'}`} />
                       </button>
                     </div>
-                    <div className="space-y-4 pt-2">
-                      <div className="space-y-2">
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest">Display Name</label>
-                        <input
-                          type="text"
-                          value={userProfile.name}
-                          onChange={e => setUserProfile({ name: e.target.value })}
-                          className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all`}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest">Avatar URL</label>
-                        <input
-                          type="url"
-                          value={userProfile.avatar_url || ''}
-                          onChange={e => setUserProfile({ avatar_url: e.target.value })}
-                          placeholder="https://example.com/avatar.png"
-                          className={`w-full ${isDarkMode ? 'bg-[#1A1A1C] border-gray-700 text-white' : 'bg-gray-50 border-gray-200'} border rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all`}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="border-t border-gray-100 dark:border-gray-800 my-4"></div>
+                    <p className="text-xs text-gray-500">Edit your profile name, photo, security settings, and privacy preferences from the profile dropdown in the top-right corner.</p>
 
                     <div className="pt-4">
                       <button
@@ -1674,6 +2321,13 @@ export default function App() {
               </motion.div>
             </div>
           )}
+        </AnimatePresence>
+
+        {/* Global Modals */}
+        <ReportBuilderModal />
+        <ReportViewer />
+        <AnimatePresence>
+          {isFocusModeOpen && <FocusModeModal onClose={() => setIsFocusModeOpen(false)} />}
         </AnimatePresence>
       </div >
     </div >

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { supabase } from '../lib/supabase';
+import { fetchWorkspaceSettings, updateWorkspaceSettingsInDB } from '../lib/workspaceSettings';
 
 export interface Task {
     id: number;
@@ -25,6 +26,7 @@ export interface Task {
     cost?: number;
     location?: any;
     created_at: string;
+    updated_at?: string;
 }
 
 export interface Project {
@@ -35,14 +37,102 @@ export interface Project {
 }
 
 export interface Message {
-    role: 'user' | 'assistant';
+    role: 'user' | 'assistant' | 'system';
     content: string;
+}
+
+export interface TeamMember {
+    id: string;
+    team_id: string;
+    user_id: string;
+    name?: string;
+    avatar_url?: string | null;
+    role: 'Manager' | 'Contributor' | 'Viewer';
+}
+
+export interface SupportTicket {
+    id: string;
+    title: string;
+    description: string;
+    category: 'bug' | 'feature' | 'access' | 'performance' | 'other';
+    priority: 'low' | 'medium' | 'high' | 'critical';
+    status: 'open' | 'in_progress' | 'resolved' | 'closed';
+    userId: string;
+    userName: string;
+    createdAt: string;
+}
+
+export interface FeedbackItem {
+    id: string;
+    title: string;
+    description: string;
+    votes: number;
+    userVoted: boolean;
+    status: 'planned' | 'in-review' | 'shipped' | 'considering';
+    category: string;
+}
+
+export interface Team {
+    id: string;
+    name: string;
+    description: string;
+    department_id: string;
+    members?: TeamMember[];
+}
+
+export interface Department {
+    id: string;
+    name: string;
+    description: string;
+    teams?: Team[];
+}
+
+export interface WorkspaceSettings {
+    name: string;
+    description: string;
+    industry: string;
+    timezone: string;
+    workingHoursStart: string;
+    workingHoursEnd: string;
+    currency: string;
+    defaultTaskStatus: 'todo' | 'in_progress' | 'done' | 'blocked';
+    defaultTaskPriority: 'low' | 'medium' | 'high' | 'urgent';
+    defaultDueDateOffsetDays: number;
+    tasksVisibleTo: 'workspace' | 'department' | 'team' | 'private';
+    aiAccess: 'all' | 'managers' | 'admin';
+    aiDataScope: 'workspace' | 'department' | 'user';
+    aiAutoExecute: boolean;
+    aiAutoCreateSubtasks: boolean;
+    aiUsageDailyCap: number;
+    aiSystemPrompt: string;
+    notifyOverdueDays: number;
+    quietHoursEnabled: boolean;
+    quietHoursStart: string;
+    quietHoursEnd: string;
+    weekendNotifications: boolean;
+    require2FA: boolean;
+    enforceSSO: boolean;
+    sessionTimeoutMinutes: number;
+    allowExternalCollaborators: boolean;
+    allowPublicLinks: boolean;
+    defaultReportPeriod: 'week' | 'month' | 'quarter';
+    autoWeeklySummary: boolean;
+    dataRetentionDays: number;
+    slackConnected: boolean;
+    googleCalendarConnected: boolean;
+    customWebhookUrl?: string;
+    planTier: 'free' | 'pro' | 'enterprise';
+    cloudAiEnabled: boolean;
+    cloudAiModel: 'gemini-2.5-pro' | 'gemini-1.5-flash';
 }
 
 interface AppState {
     // Global Data
     tasks: Task[];
     projects: Project[];
+    departments: Department[];
+    teams: Team[];
+    allProfiles: any[];
     totalHours: number;
     messages: Message[];
 
@@ -50,18 +140,25 @@ interface AppState {
     input: string;
     isLoading: boolean;
     isRefreshing: boolean;
-    activeTab: 'dashboard' | 'tasks' | 'reports';
+    activeTab: 'dashboard' | 'tasks' | 'reports' | 'analytics' | 'team' | 'support';
 
     // Modals & Editing
     isModalOpen: boolean;
     isProjectModalOpen: boolean;
     isTimeLogModalOpen: boolean;
     isSettingsModalOpen: boolean;
+    isWorkspaceSettingsModalOpen: boolean;
     isThroneModalOpen: boolean;
+    isReportBuilderOpen: boolean;
+    activeReportTemplate: string | null;
+    generatedReportData: any | null;
+    isGeneratingReport: boolean;
     isDarkMode: boolean;
     userProfile: {
+        id?: string;
         name: string;
         avatar_url: string | null;
+        global_role?: string;
     };
     user: any | null; // From Supabase Auth
     isAdmin: boolean;
@@ -103,19 +200,64 @@ interface AppState {
     isNavOpen: boolean;
     isSidebarOpen: boolean;
 
+    // Support Module
+    supportTab: 'assistant' | 'helpcenter' | 'tickets' | 'status' | 'feedback';
+    supportTickets: SupportTicket[];
+    feedbackItems: FeedbackItem[];
+
+    // Chat History
+    mainChatSessions: { id: string; title: string; updated_at: string; }[];
+    supportChatSessions: { id: string; title: string; updated_at: string; }[];
+    activeMainChatId: string | null;
+    activeSupportChatId: string | null;
+    isChatHistoryOpen: boolean;
+
+    // Pomodoro Timer
+    pomodoroState: {
+        mode: 'work' | 'shortBreak' | 'longBreak';
+        timeLeft: number;
+        isRunning: boolean;
+        sessionsCompleted: number;
+        selectedTaskId: string | null;
+    };
+    setPomodoroState: (patch: Partial<AppState['pomodoroState']> | ((prev: AppState['pomodoroState']) => AppState['pomodoroState'])) => void;
+
+    // Eisenhower Matrix
+    eisenhowerMap: Record<string, string>; // taskId -> quadrant ('q1'|'q2'|'q3'|'q4')
+    setTaskQuadrant: (taskId: string, quadrant: string) => void;
+
+    // Workspace Settings
+    workspaceSettings: WorkspaceSettings;
+    setWorkspaceSettings: (settings: Partial<WorkspaceSettings>) => void;
+
     // Actions
+    timeLogs: any[]; // Store full time logs for metric calculations
     setTasks: (tasks: Task[]) => void;
     setProjects: (projects: Project[]) => void;
+    setDepartments: (departments: Department[]) => void;
+    setTeams: (teams: Team[]) => void;
+    setAllProfiles: (profiles: any[]) => void;
     setTotalHours: (hours: number) => void;
     setMessages: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
     setInput: (input: string) => void;
     setIsLoading: (isLoading: boolean) => void;
     setIsRefreshing: (isRefreshing: boolean) => void;
-    setActiveTab: (tab: 'dashboard' | 'tasks' | 'reports') => void;
+    setActiveTab: (tab: AppState['activeTab']) => void;
     setIsModalOpen: (isOpen: boolean) => void;
     setIsProjectModalOpen: (isOpen: boolean) => void;
     setIsTimeLogModalOpen: (isOpen: boolean) => void;
     setIsSettingsModalOpen: (isOpen: boolean) => void;
+    setIsWorkspaceSettingsModalOpen: (isOpen: boolean) => void;
+    setIsReportBuilderOpen: (isOpen: boolean) => void;
+    setActiveReportTemplate: (template: string | null) => void;
+    setGeneratedReportData: (data: any | null) => void;
+    generateReport: (config: {
+        template: string;
+        scope: string;
+        dateRange: string;
+        metrics: any;
+        useAI: boolean;
+    }) => Promise<void>;
     setIsThroneModalOpen: (isOpen: boolean) => void;
     toggleDarkMode: () => void;
     setUserProfile: (profile: Partial<AppState['userProfile']>) => void;
@@ -131,16 +273,44 @@ interface AppState {
     setTimeLogFormData: (updater: Partial<AppState['timeLogFormData']> | ((prev: AppState['timeLogFormData']) => AppState['timeLogFormData'])) => void;
     setIsNavOpen: (isOpen: boolean) => void;
     setIsSidebarOpen: (isOpen: boolean) => void;
+    setSupportTab: (tab: AppState['supportTab']) => void;
+    // Support data: Supabase-backed async thunks
+    fetchSupportTickets: () => Promise<void>;
+    fetchFeedbackItems: () => Promise<void>;
+    addSupportTicket: (ticket: Omit<SupportTicket, 'id' | 'createdAt'>) => Promise<void>;
+    updateTicketStatus: (id: string, status: SupportTicket['status']) => Promise<void>;
+    voteFeedback: (id: string, userId: string) => Promise<void>;
+    addFeedbackItem: (item: Omit<FeedbackItem, 'id' | 'votes' | 'userVoted'>) => Promise<void>;
 
     // Thunks / Async Actions
     fetchData: () => Promise<void>;
     initializeAuth: () => (() => void);
     signOut: () => Promise<void>;
 
+    // Chat Session Management
+    fetchChatSessions: (module: 'main' | 'support') => Promise<void>;
+    setActiveChatSessionId: (module: 'main' | 'support', id: string | null) => void;
+    setIsChatHistoryOpen: (isOpen: boolean) => void;
+    createNewChatSession: (module: 'main' | 'support') => void;
+    loadChatSession: (module: 'main' | 'support', sessionId?: string) => Promise<any[] | null>;
+    saveChatSession: (module: 'main' | 'support', msgs: any[]) => Promise<void>;
+    deleteChatSession: (module: 'main' | 'support', sessionId: string) => Promise<void>;
+    renameChatSession: (module: 'main' | 'support', sessionId: string, newTitle: string) => Promise<void>;
+    deleteAllChatSessions: (module: 'main' | 'support') => Promise<void>;
+
     // Admin Actions
     inviteUser: (email: string) => Promise<{ error: any }>;
     resetUserPassword: (email: string) => Promise<{ error: any }>;
     toggleUserAdmin: (userId: string, currentStatus: boolean) => Promise<{ error: any }>;
+    updateGlobalRole: (userId: string, role: 'Global Admin' | 'Department Admin' | 'Manager' | 'User') => Promise<{ error: any }>;
+    createDepartment: (name: string, description: string) => Promise<{ error: any }>;
+    createTeam: (name: string, departmentId: string) => Promise<{ error: any }>;
+    updateTeam: (teamId: string, name: string) => Promise<{ error: any }>;
+    deleteTeam: (teamId: string) => Promise<{ error: any }>;
+    moveTeam: (teamId: string, newDepartmentId: string) => Promise<{ error: any }>;
+    fetchAllProfiles: () => Promise<void>;
+    assignUserToTeam: (userId: string, teamId: string, role: 'Manager' | 'Contributor' | 'Viewer') => Promise<{ error: any }>;
+    removeUserFromTeam: (userId: string, teamId: string) => Promise<{ error: any }>;
 }
 
 export const useAppStore = create<AppState>()(
@@ -148,6 +318,10 @@ export const useAppStore = create<AppState>()(
         (set, get) => ({
             tasks: [],
             projects: [],
+            departments: [],
+            teams: [],
+            allProfiles: [],
+            timeLogs: [],
             totalHours: 0,
             messages: [
                 { role: 'assistant', content: 'Hello! I am your Work Intelligence Agent. How can I help you manage your tasks today?' }
@@ -162,6 +336,48 @@ export const useAppStore = create<AppState>()(
             isTimeLogModalOpen: false,
             isSettingsModalOpen: false,
             isThroneModalOpen: false,
+            isReportBuilderOpen: false,
+            activeReportTemplate: null,
+            generatedReportData: null,
+            isGeneratingReport: false,
+            isWorkspaceSettingsModalOpen: false,
+            workspaceSettings: {
+                name: 'Rickel Industries',
+                description: 'Intelligent Work Platform',
+                industry: 'Technology',
+                timezone: 'UTC',
+                workingHoursStart: '09:00',
+                workingHoursEnd: '17:00',
+                currency: 'USD',
+                defaultTaskStatus: 'todo',
+                defaultTaskPriority: 'medium',
+                defaultDueDateOffsetDays: 3,
+                tasksVisibleTo: 'team',
+                aiAccess: 'all',
+                aiDataScope: 'user',
+                aiAutoExecute: true,
+                aiAutoCreateSubtasks: false,
+                aiUsageDailyCap: 100,
+                aiSystemPrompt: 'Prioritize strategic outcomes and maintain focus on high-impact tasks.',
+                notifyOverdueDays: 1,
+                quietHoursEnabled: true,
+                quietHoursStart: '18:00',
+                quietHoursEnd: '08:00',
+                weekendNotifications: false,
+                require2FA: false,
+                enforceSSO: false,
+                sessionTimeoutMinutes: 120,
+                allowExternalCollaborators: false,
+                allowPublicLinks: false,
+                defaultReportPeriod: 'week',
+                autoWeeklySummary: true,
+                dataRetentionDays: 365,
+                slackConnected: false,
+                googleCalendarConnected: false,
+                planTier: 'pro',
+                cloudAiEnabled: true,
+                cloudAiModel: 'gemini-2.5-pro'
+            },
             isDarkMode: true,
             userProfile: {
                 name: 'Guest User',
@@ -170,11 +386,17 @@ export const useAppStore = create<AppState>()(
             user: null,
             isAdmin: false,
             geminiApiKey: '',
-            useLocalModel: true,
+            useLocalModel: false,
             localModelUrl: 'https://tea.rickelindustries.co.ke/',
             editingTask: null,
             editingProject: null,
             selectedTaskIdForTimeLog: null,
+            // Chat History
+            mainChatSessions: [],
+            supportChatSessions: [],
+            activeMainChatId: null,
+            activeSupportChatId: null,
+            isChatHistoryOpen: false,
 
             formData: {
                 title: '',
@@ -205,8 +427,37 @@ export const useAppStore = create<AppState>()(
             isNavOpen: false,
             isSidebarOpen: true,
 
+            // Support Module
+            supportTab: 'assistant',
+            supportTickets: [
+                { id: 's1', title: 'Cannot assign tasks to new team member', description: 'When I try to assign a task to the newly added team member, the dropdown does not show them.', category: 'bug', priority: 'high', status: 'open', userId: 'system', userName: 'System Demo', createdAt: new Date(Date.now() - 86400000 * 2).toISOString() },
+                { id: 's2', title: 'Request: Bulk task import from CSV', description: 'It would save a lot of time to import tasks from a CSV spreadsheet.', category: 'feature', priority: 'medium', status: 'in_progress', userId: 'system', userName: 'System Demo', createdAt: new Date(Date.now() - 86400000 * 5).toISOString() },
+            ],
+            feedbackItems: [
+                { id: 'f1', title: 'Dark mode for mobile app', description: 'Would love dark mode on the mobile version.', votes: 24, userVoted: false, status: 'planned', category: 'UI/UX' },
+                { id: 'f2', title: 'Slack integration for task notifications', description: 'Get notified in Slack when tasks are assigned to me.', votes: 18, userVoted: false, status: 'in-review', category: 'Integration' },
+                { id: 'f3', title: 'Recurring tasks', description: 'Allow tasks to repeat daily, weekly, or monthly automatically.', votes: 41, userVoted: false, status: 'planned', category: 'Productivity' },
+                { id: 'f4', title: 'Time tracking export to payroll', description: 'Export time logs directly to payroll systems.', votes: 12, userVoted: false, status: 'considering', category: 'Finance' },
+                { id: 'f5', title: 'Kanban board view', description: 'Drag-and-drop kanban for task management.', votes: 55, userVoted: true, status: 'shipped', category: 'Productivity' },
+            ],
+
+            // Pomodoro Timer
+            pomodoroState: {
+                mode: 'work',
+                timeLeft: 25 * 60,
+                isRunning: false,
+                sessionsCompleted: 0,
+                selectedTaskId: null,
+            },
+
+            // Eisenhower Matrix
+            eisenhowerMap: {},
+
             setTasks: (tasks) => set({ tasks }),
             setProjects: (projects) => set({ projects }),
+            setDepartments: (departments) => set({ departments }),
+            setTeams: (teams) => set({ teams }),
+            setAllProfiles: (allProfiles) => set({ allProfiles }),
             setTotalHours: (totalHours) => set({ totalHours }),
             setMessages: (updater) => set((state) => ({
                 messages: typeof updater === 'function' ? updater(state.messages) : updater
@@ -215,11 +466,50 @@ export const useAppStore = create<AppState>()(
             setIsLoading: (isLoading) => set({ isLoading }),
             setIsRefreshing: (isRefreshing) => set({ isRefreshing }),
             setActiveTab: (activeTab) => set({ activeTab }),
+            setPomodoroState: (patch) => set((state) => ({
+                pomodoroState: typeof patch === 'function'
+                    ? patch(state.pomodoroState)
+                    : { ...state.pomodoroState, ...patch }
+            })),
+            setTaskQuadrant: (taskId, quadrant) => set((state) => ({
+                eisenhowerMap: { ...state.eisenhowerMap, [taskId]: quadrant }
+            })),
             setIsModalOpen: (isModalOpen) => set({ isModalOpen }),
             setIsProjectModalOpen: (isProjectModalOpen) => set({ isProjectModalOpen }),
             setIsTimeLogModalOpen: (isTimeLogModalOpen) => set({ isTimeLogModalOpen }),
             setIsSettingsModalOpen: (isSettingsModalOpen) => set({ isSettingsModalOpen }),
+            setIsWorkspaceSettingsModalOpen: (isWorkspaceSettingsModalOpen) => set({ isWorkspaceSettingsModalOpen }),
             setIsThroneModalOpen: (isThroneModalOpen) => set({ isThroneModalOpen }),
+            setIsReportBuilderOpen: (isReportBuilderOpen) => set({ isReportBuilderOpen }),
+            setActiveReportTemplate: (activeReportTemplate) => set({ activeReportTemplate }),
+            setGeneratedReportData: (generatedReportData) => set({ generatedReportData }),
+            generateReport: async (config) => {
+                set({ isGeneratingReport: true });
+                try {
+                    const response = await fetch('/api/generate-report', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            ...config,
+                            userId: get().user?.id
+                        })
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        set({
+                            generatedReportData: {
+                                ...config,
+                                stats: data.stats,
+                                aiContent: data.aiContent
+                            }
+                        });
+                    }
+                } catch (error) {
+                    console.error("Failed to generate report:", error);
+                } finally {
+                    set({ isGeneratingReport: false });
+                }
+            },
             toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
             setUserProfile: (profile) => set((state) => ({
                 userProfile: { ...state.userProfile, ...profile }
@@ -232,7 +522,8 @@ export const useAppStore = create<AppState>()(
                         set({
                             userProfile: {
                                 name: profile.full_name || 'Guest User',
-                                avatar_url: profile.avatar_url
+                                avatar_url: profile.avatar_url,
+                                global_role: profile.global_role || 'User'
                             },
                             isAdmin: profile.is_admin || false
                         });
@@ -240,6 +531,13 @@ export const useAppStore = create<AppState>()(
                 } else {
                     set({ isAdmin: false });
                 }
+            },
+            setWorkspaceSettings: (settings) => {
+                set((state) => ({
+                    workspaceSettings: { ...state.workspaceSettings, ...settings }
+                }));
+                // Persist changes to Supabase in the background
+                void updateWorkspaceSettingsInDB(settings);
             },
             setGeminiApiKey: (geminiApiKey) => set({ geminiApiKey }),
             setUseLocalModel: (useLocalModel) => set({ useLocalModel }),
@@ -260,18 +558,194 @@ export const useAppStore = create<AppState>()(
 
             setIsNavOpen: (isNavOpen) => set({ isNavOpen }),
             setIsSidebarOpen: (isSidebarOpen) => set({ isSidebarOpen }),
+            setSupportTab: (supportTab) => set({ supportTab }),
+
+            // ─── Support: Supabase-backed ───
+            fetchSupportTickets: async () => {
+                // Use store user (works with DEV BYPASS too)
+                const uid = get().user?.id;
+                const isAdminUser = get().isAdmin;
+                if (!uid) return;
+                try {
+                    const query = supabase.from('support_tickets').select('*').order('created_at', { ascending: false });
+                    const { data, error } = await (isAdminUser ? query : query.eq('user_id', uid));
+                    if (error) { console.warn('[Support] fetchTickets error:', error.message); return; }
+                    if (data) {
+                        const mapped: SupportTicket[] = data.map((t: any) => ({
+                            id: t.id, title: t.title, description: t.description,
+                            category: t.category, priority: t.priority, status: t.status,
+                            userId: t.user_id, userName: t.user_name, createdAt: t.created_at,
+                        }));
+                        set({ supportTickets: mapped });
+                    }
+                } catch (e) { console.warn('[Support] fetchTickets exception:', e); }
+            },
+
+            fetchFeedbackItems: async () => {
+                const uid = get().user?.id;
+                try {
+                    const { data: items, error } = await supabase.from('feedback_items').select('*').order('votes', { ascending: false });
+                    if (error) { console.warn('[Support] fetchFeedback error:', error.message); return; }
+                    let votedIds = new Set<string>();
+                    if (uid) {
+                        const { data: votes } = await supabase.from('feedback_votes').select('feedback_id').eq('user_id', uid);
+                        if (votes) votedIds = new Set(votes.map((v: any) => v.feedback_id));
+                    }
+                    if (items) {
+                        const mapped: FeedbackItem[] = items.map((f: any) => ({
+                            id: f.id, title: f.title, description: f.description,
+                            category: f.category, status: f.status, votes: f.votes,
+                            userVoted: votedIds.has(f.id),
+                        }));
+                        set({ feedbackItems: mapped });
+                    }
+                } catch (e) { console.warn('[Support] fetchFeedback exception:', e); }
+            },
+
+            addSupportTicket: async (ticketData) => {
+                // Use store user — works even with DEV BYPASS
+                const uid = get().user?.id;
+                const userName = ticketData.userName || get().userProfile?.name || 'Unknown';
+                // Always add optimistically first so UI is instant
+                const localTicket: SupportTicket = {
+                    id: `local-${Date.now()}`,
+                    title: ticketData.title,
+                    description: ticketData.description,
+                    category: ticketData.category,
+                    priority: ticketData.priority,
+                    status: 'open',
+                    userId: uid || 'local',
+                    userName,
+                    createdAt: new Date().toISOString(),
+                };
+                set(s => ({ supportTickets: [localTicket, ...s.supportTickets] }));
+                // Then try to persist to Supabase
+                if (uid) {
+                    try {
+                        const { error } = await supabase.from('support_tickets').insert({
+                            title: ticketData.title, description: ticketData.description,
+                            category: ticketData.category, priority: ticketData.priority,
+                            status: 'open', user_id: uid, user_name: userName,
+                        });
+                        if (!error) {
+                            // Replace local ticket with real DB ticket
+                            await useAppStore.getState().fetchSupportTickets();
+                        } else {
+                            console.warn('[Support] addTicket DB error (local state kept):', error.message);
+                        }
+                    } catch (e) { console.warn('[Support] addTicket exception (local state kept):', e); }
+                }
+            },
+
+            updateTicketStatus: async (id, status) => {
+                // Optimistic update first
+                set(state => ({
+                    supportTickets: state.supportTickets.map(t => t.id === id ? { ...t, status } : t)
+                }));
+                try {
+                    const { error } = await supabase.from('support_tickets').update({ status }).eq('id', id);
+                    if (error) console.warn('[Support] updateStatus DB error:', error.message);
+                } catch (e) { console.warn('[Support] updateStatus exception:', e); }
+            },
+
+            voteFeedback: async (id, userId) => {
+                const item = useAppStore.getState().feedbackItems.find(f => f.id === id);
+                if (!item) return;
+                // Optimistic local update first
+                set(s => ({
+                    feedbackItems: s.feedbackItems.map(f => f.id === id
+                        ? { ...f, votes: item.userVoted ? f.votes - 1 : f.votes + 1, userVoted: !f.userVoted }
+                        : f)
+                }));
+                try {
+                    if (item.userVoted) {
+                        await supabase.from('feedback_votes').delete().eq('feedback_id', id).eq('user_id', userId);
+                        await supabase.from('feedback_items').update({ votes: Math.max(0, item.votes - 1) }).eq('id', id);
+                    } else {
+                        await supabase.from('feedback_votes').upsert({ feedback_id: id, user_id: userId });
+                        await supabase.from('feedback_items').update({ votes: item.votes + 1 }).eq('id', id);
+                    }
+                } catch (e) { console.warn('[Support] vote exception (local state kept):', e); }
+            },
+
+            addFeedbackItem: async (itemData) => {
+                const uid = get().user?.id;
+                // Optimistic local add first
+                const localItem: FeedbackItem = {
+                    id: `local-${Date.now()}`,
+                    title: itemData.title,
+                    description: itemData.description,
+                    category: itemData.category,
+                    status: 'considering',
+                    votes: 1,
+                    userVoted: true,
+                };
+                set(s => ({ feedbackItems: [localItem, ...s.feedbackItems] }));
+                // Then persist
+                try {
+                    const { error } = await supabase.from('feedback_items').insert({
+                        title: itemData.title, description: itemData.description,
+                        category: itemData.category, status: 'considering', votes: 1,
+                        created_by: uid || null,
+                    });
+                    if (!error) {
+                        // Record vote for this user if we have their ID
+                        if (uid) {
+                            const { data: newItem } = await supabase.from('feedback_items')
+                                .select('id').eq('title', itemData.title).order('created_at', { ascending: false }).limit(1).single();
+                            if (newItem) await supabase.from('feedback_votes').upsert({ feedback_id: newItem.id, user_id: uid });
+                        }
+                        await useAppStore.getState().fetchFeedbackItems();
+                    } else {
+                        console.warn('[Support] addFeedback DB error (local state kept):', error.message);
+                    }
+                } catch (e) { console.warn('[Support] addFeedback exception (local state kept):', e); }
+            },
 
             fetchData: async () => {
                 try {
-                    const [tasksRes, projectsRes, metricsRes] = await Promise.all([
+                    // Fetch all citizens concurrently to populate Assignee dropdowns
+                    get().fetchAllProfiles();
+
+                    // Load global workspace settings
+                    void fetchWorkspaceSettings().then((settings) => {
+                        if (settings) {
+                            set({ workspaceSettings: settings });
+                        }
+                    });
+
+                    const [tasksRes, projectsRes, metricsRes, deptsRes, teamsRes] = await Promise.all([
                         supabase.from('tasks').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
                         supabase.from('projects').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
-                        supabase.from('time_logs').select('hours')
+                        supabase.from('time_logs').select('*'),
+                        supabase.from('departments').select('*').order('name'),
+                        supabase.from('teams').select('*, members:team_members(*)').order('name')
                     ]);
 
                     if (tasksRes.error) throw tasksRes.error;
                     if (projectsRes.error) throw projectsRes.error;
                     if (metricsRes.error) throw metricsRes.error;
+
+                    const fetchedDepts = (deptsRes.data as Department[]) || [];
+                    const fetchedTeams = (teamsRes.data as Team[]) || [];
+
+                    // Important fix: Nest teams inside their respective departments for the UI
+                    const departmentsWithTeams = fetchedDepts.map(dept => {
+                        const deptTeams = fetchedTeams.filter(team => team.department_id === dept.id);
+                        return { ...dept, teams: deptTeams };
+                    });
+
+                    if (deptsRes.error) {
+                        console.error('Error fetching departments:', deptsRes.error);
+                    } else {
+                        set({ departments: departmentsWithTeams });
+                    }
+
+                    if (teamsRes.error) {
+                        console.error('Error fetching teams:', teamsRes.error);
+                    } else {
+                        set({ teams: fetchedTeams });
+                    }
 
                     const tasksData = tasksRes.data || [];
                     const projectsData = projectsRes.data || [];
@@ -281,8 +755,21 @@ export const useAppStore = create<AppState>()(
                     set({
                         tasks: tasksData as Task[],
                         projects: projectsData as Project[],
+                        timeLogs: timeLogs as any[],
                         totalHours: totalHours
                     });
+
+                    // ----------------------------------------------------
+                    // Fetch Chat Session List (Don't auto-load content)
+                    // ----------------------------------------------------
+                    try {
+                        // We fetch the list so the history sidebar is accurate,
+                        // but we no longer 'set' messages from the latest session here.
+                        await get().fetchChatSessions('main');
+                    } catch (chatErr) {
+                        console.warn('Failed to load chat sessions:', chatErr);
+                    }
+                    // ----------------------------------------------------
 
                     // Set default project if none selected and projects exist
                     const state = get();
@@ -316,7 +803,147 @@ export const useAppStore = create<AppState>()(
             },
             signOut: async () => {
                 await supabase.auth.signOut();
-                set({ user: null, tasks: [], projects: [], totalHours: 0 });
+                set({
+                    user: null, tasks: [], projects: [], totalHours: 0,
+                    mainChatSessions: [], supportChatSessions: [],
+                    activeMainChatId: null, activeSupportChatId: null,
+                    messages: [
+                        { role: 'assistant', content: 'Hello! I am your Work Intelligence Agent. How can I help you manage your tasks today?' }
+                    ]
+                });
+            },
+
+            fetchChatSessions: async (module) => {
+                const uid = get().user?.id;
+                if (!uid) return;
+                const { data, error } = await supabase
+                    .from('ai_chat_sessions')
+                    .select('id, title, updated_at')
+                    .eq('user_id', uid)
+                    .eq('module', module)
+                    .order('updated_at', { ascending: false });
+                if (!error && data) {
+                    if (module === 'main') set({ mainChatSessions: data });
+                    else set({ supportChatSessions: data });
+                }
+            },
+
+            setActiveChatSessionId: (module, id) => {
+                if (module === 'main') set({ activeMainChatId: id });
+                else set({ activeSupportChatId: id });
+            },
+            setIsChatHistoryOpen: (isOpen) => set({ isChatHistoryOpen: isOpen }),
+
+            deleteChatSession: async (module, sessionId) => {
+                const uid = get().user?.id;
+                if (!uid) return;
+                await supabase.from('ai_chat_sessions').delete().eq('id', sessionId).eq('user_id', uid);
+                // If the deleted session is active, start fresh
+                const activeId = module === 'main' ? get().activeMainChatId : get().activeSupportChatId;
+                if (activeId === sessionId) {
+                    get().createNewChatSession(module);
+                }
+                await get().fetchChatSessions(module);
+            },
+
+            renameChatSession: async (module, sessionId, newTitle) => {
+                const uid = get().user?.id;
+                if (!uid) return;
+                await supabase.from('ai_chat_sessions').update({ title: newTitle }).eq('id', sessionId).eq('user_id', uid);
+                await get().fetchChatSessions(module);
+            },
+
+            deleteAllChatSessions: async (module) => {
+                const uid = get().user?.id;
+                if (!uid) return;
+                await supabase.from('ai_chat_sessions').delete().eq('user_id', uid).eq('module', module);
+                get().createNewChatSession(module);
+                if (module === 'main') set({ mainChatSessions: [] });
+                else set({ supportChatSessions: [] });
+            },
+
+            createNewChatSession: (module) => {
+                if (module === 'main') {
+                    set({
+                        activeMainChatId: null,
+                        messages: [{ role: 'assistant', content: 'Hello! Let\'s start a new conversation. What can I help you with?' }]
+                    });
+                } else {
+                    set({
+                        activeSupportChatId: null,
+                        // We don't reset the global messages if we're in support assistant 
+                        // unless specifically requested, but for now we follow the same pattern if it's the main greeting
+                    });
+                }
+            },
+
+            loadChatSession: async (module, sessionId) => {
+                const uid = get().user?.id;
+                if (!uid) return null;
+
+                const activeId = module === 'main' ? get().activeMainChatId : get().activeSupportChatId;
+
+                let query = supabase.from('ai_chat_sessions').select('id, messages').eq('user_id', uid).eq('module', module);
+
+                if (sessionId) {
+                    query = query.eq('id', sessionId);
+                } else if (activeId) {
+                    query = query.eq('id', activeId);
+                } else {
+                    query = query.order('updated_at', { ascending: false }).limit(1);
+                }
+
+                const { data, error } = await query.maybeSingle();
+
+                if (!error && data) {
+                    if (module === 'main') set({ activeMainChatId: data.id });
+                    else set({ activeSupportChatId: data.id });
+                    return data.messages;
+                } else if (error) {
+                    console.warn(`Failed to load ${module} chat session:`, error);
+                }
+                return null;
+            },
+
+            saveChatSession: async (module, msgs) => {
+                const uid = get().user?.id;
+                if (!uid) return;
+
+                const activeId = module === 'main' ? get().activeMainChatId : get().activeSupportChatId;
+
+                // Smarter title generation based on the first user message
+                const userMsgs = msgs.filter(m => m.role === 'user');
+                let titleText = 'New Conversation';
+                if (userMsgs.length > 0) {
+                    const firstMsg = userMsgs[0].content.trim();
+                    titleText = firstMsg.length > 40 ? firstMsg.substring(0, 40) + '...' : firstMsg;
+                }
+
+                if (activeId) {
+                    // Update existing
+                    await supabase.from('ai_chat_sessions').update({
+                        messages: msgs,
+                        title: titleText,
+                        updated_at: new Date().toISOString()
+                    }).eq('id', activeId);
+                } else {
+                    // Create new
+                    const { data, error } = await supabase.from('ai_chat_sessions').insert({
+                        user_id: uid,
+                        module,
+                        messages: msgs,
+                        title: titleText,
+                        updated_at: new Date().toISOString()
+                    }).select('id').single();
+
+                    if (data && !error) {
+                        if (module === 'main') set({ activeMainChatId: data.id });
+                        else set({ activeSupportChatId: data.id });
+                    }
+                }
+
+                // Refresh history list
+                get().fetchChatSessions(module);
             },
 
             inviteUser: async (email) => {
@@ -341,10 +968,158 @@ export const useAppStore = create<AppState>()(
                     .update({ is_admin: !currentStatus })
                     .eq('id', userId);
                 return { error };
+            },
+
+            updateGlobalRole: async (userId, role) => {
+                const { error } = await supabase
+                    .from('profiles')
+                    .update({ global_role: role, is_admin: role === 'Global Admin' })
+                    .eq('id', userId);
+                if (!error) {
+                    get().fetchAllProfiles(); // Refresh the directory
+
+                    // If modifying oneself, refresh own session data
+                    if (userId === get().user?.id) {
+                        const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
+                        if (profile) {
+                            set(state => ({
+                                userProfile: { ...state.userProfile, global_role: profile.global_role },
+                                isAdmin: profile.is_admin
+                            }));
+                        }
+                    }
+                }
+                return { error };
+            },
+
+            createDepartment: async (name, description) => {
+                const { data, error } = await supabase.from('departments').insert([{ name, description }]).select().single();
+                if (data) {
+                    set(state => ({ departments: [...state.departments, { ...data, teams: [] }] }));
+                }
+                return { error };
+            },
+
+            createTeam: async (name, departmentId) => {
+                const { data, error } = await supabase.from('teams').insert([{ name, department_id: departmentId }]).select().single();
+                if (data && !error) {
+                    const newTeamData = { ...data, members: [] };
+                    set(state => {
+                        const newTeams = [...state.teams, newTeamData];
+                        // Also nest it under the right department for UI
+                        const newDepartments = state.departments.map(d => {
+                            if (d.id === departmentId) {
+                                return { ...d, teams: [...(d.teams || []), newTeamData] };
+                            }
+                            return d;
+                        });
+                        return { teams: newTeams, departments: newDepartments };
+                    });
+                    // Refresh completely to ensure RLS dependencies or linkages are synced
+                    get().fetchData();
+                }
+                return { error };
+            },
+
+            updateTeam: async (teamId, name) => {
+                const { data, error } = await supabase.from('teams').update({ name }).eq('id', teamId).select().single();
+                if (data && !error) {
+                    set(state => {
+                        const newTeams = state.teams.map(t => t.id === teamId ? { ...t, ...data } : t);
+                        const newDepartments = state.departments.map(d => {
+                            if (d.id === data.department_id) {
+                                return { ...d, teams: (d.teams || []).map(t => t.id === teamId ? { ...t, name } : t) };
+                            }
+                            return d;
+                        });
+                        return { teams: newTeams, departments: newDepartments };
+                    });
+                }
+                return { error };
+            },
+
+            deleteTeam: async (teamId) => {
+                const teamToDelete = get().teams.find(t => t.id === teamId);
+                const { error } = await supabase.from('teams').delete().eq('id', teamId);
+                if (!error && teamToDelete) {
+                    set(state => {
+                        const newTeams = state.teams.filter(t => t.id !== teamId);
+                        const newDepartments = state.departments.map(d => {
+                            if (d.id === teamToDelete.department_id) {
+                                return { ...d, teams: (d.teams || []).filter(t => t.id !== teamId) };
+                            }
+                            return d;
+                        });
+                        return { teams: newTeams, departments: newDepartments };
+                    });
+                }
+                return { error };
+            },
+
+            moveTeam: async (teamId, newDepartmentId) => {
+                const { error } = await supabase
+                    .from('teams')
+                    .update({ department_id: newDepartmentId })
+                    .eq('id', teamId);
+
+                if (!error) {
+                    set(state => {
+                        const newTeams = state.teams.map(t =>
+                            t.id === teamId ? { ...t, department_id: newDepartmentId } : t
+                        );
+
+                        // We also need to update the nested teams inside departments
+                        const newDepartments = state.departments.map(d => {
+                            // Remove from old
+                            const filteredTeams = (d.teams || []).filter(t => t.id !== teamId);
+
+                            // Add to new
+                            if (d.id === newDepartmentId) {
+                                const movedTeam = state.teams.find(t => t.id === teamId);
+                                if (movedTeam) {
+                                    filteredTeams.push({ ...movedTeam, department_id: newDepartmentId });
+                                }
+                            }
+                            return { ...d, teams: filteredTeams };
+                        });
+
+                        return { teams: newTeams, departments: newDepartments };
+                    });
+                }
+                return { error };
+            },
+
+            fetchAllProfiles: async () => {
+                const { data, error } = await supabase.from('profiles').select('*').order('full_name');
+                if (!error && data) {
+                    set({ allProfiles: data });
+                }
+            },
+
+            assignUserToTeam: async (userId, teamId, role) => {
+                // Upsert handles updates if they're already in a team but role changed
+                const { error } = await supabase.from('team_members').upsert({
+                    team_id: teamId,
+                    user_id: userId,
+                    role: role
+                }, { onConflict: 'team_id,user_id' });
+
+                if (!error) {
+                    get().fetchData();
+                }
+                return { error };
+            },
+
+            removeUserFromTeam: async (userId, teamId) => {
+                const { error } = await supabase.from('team_members').delete().match({ team_id: teamId, user_id: userId });
+                if (!error) {
+                    get().fetchData();
+                }
+                return { error };
             }
         }),
         {
-            name: 'taskion-storage',
+            name: 'tickel-storage',
             partialize: (state) => ({
                 isDarkMode: state.isDarkMode,
                 useLocalModel: state.useLocalModel,

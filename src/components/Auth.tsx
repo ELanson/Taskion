@@ -69,8 +69,8 @@ export default function Auth() {
                 <div className="text-center space-y-2">
                     <div className="flex justify-center mb-6">
                         <img
-                            src={isDarkMode ? "/Taskion Logo 192px invert.png" : "/Taskion Logo 192px.png"}
-                            alt="Taskion Logo"
+                            src={isDarkMode ? "/TICKEL Logo 192px invert.png" : "/TICKEL Logo 192px.png"}
+                            alt="TICKEL Logo"
                             className="w-16 h-16 object-contain"
                         />
                     </div>
@@ -78,7 +78,7 @@ export default function Auth() {
                         {isLogin ? 'Welcome back' : 'Create account'}
                     </h2>
                     <p className="text-gray-500 text-sm">
-                        {isLogin ? 'Enter your credentials to access your workspace' : 'Join Taskion to start tracking your intelligence'}
+                        {isLogin ? 'Enter your credentials to access your workspace' : 'Join TICKEL to start tracking your intelligence'}
                     </p>
                 </div>
 
