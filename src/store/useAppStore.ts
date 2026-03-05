@@ -48,7 +48,7 @@ export interface TeamMember {
     user_id: string;
     name?: string;
     avatar_url?: string | null;
-    role: 'Manager' | 'Contributor' | 'Viewer';
+    role: 'Manager' | 'Contributor' | 'Viewer' | 'lead' | 'member';
 }
 
 export interface SupportTicket {

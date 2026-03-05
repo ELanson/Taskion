@@ -156,34 +156,106 @@ Always use this format for every tool call. You can call multiple tools by repea
 
 Be concise, helpful, and professional.`;
 
+/**
+ * Robustly extracts [TOOL_CALLS] and [ARGS] from text using brace counting for the JSON part.
+ * Returns the cleaned text and the extracted tool calls.
+ */
+function extractToolCallsFromText(content: string): { cleanText: string, toolCalls: any[] } {
+    const toolCalls: any[] = [];
+    let cleanText = content;
+
+    // We look for [TOOL_CALLS]name[ARGS]{...}
+    const pattern = /\[TOOL_CALLS\](.*?)(?=\[TOOL_CALLS\]|\[ARGS\]|$)/g;
+    let match;
+
+    // We use a temporary string to track removals to avoid index shift issues during the loop
+    const remnants: { start: number, end: number }[] = [];
+
+    while ((match = pattern.exec(content)) !== null) {
+        const toolName = match[1].trim();
+        const toolCallStart = match.index;
+
+        // Find the [ARGS] tag immediately following or very close to this [TOOL_CALLS]
+        const argsMarker = "[ARGS]";
+        const argsIndex = content.indexOf(argsMarker, pattern.lastIndex);
+
+        // If [ARGS] is found and it's reasonably close (within 50 chars of the end of the tool name)
+        if (argsIndex !== -1 && argsIndex < (pattern.lastIndex + 50)) {
+            const jsonStart = argsIndex + argsMarker.length;
+
+            // Find the matching brace for the JSON object
+            let braceCount = 0;
+            let foundStart = false;
+            let jsonEnd = -1;
+
+            for (let i = jsonStart; i < content.length; i++) {
+                if (content[i] === '{') {
+                    braceCount++;
+                    foundStart = true;
+                } else if (content[i] === '}') {
+                    braceCount--;
+                }
+
+                if (foundStart && braceCount === 0) {
+                    jsonEnd = i + 1;
+                    break;
+                }
+            }
+
+            if (jsonEnd !== -1) {
+                const jsonStr = content.substring(jsonStart, jsonEnd);
+                try {
+                    // Pre-sanitize simple multi-line strings inside JSON
+                    const sanitizedJson = jsonStr.replace(/:\s*"([\s\S]*?)"/g, (_m: string, inner: string) => {
+                        return `: "${inner.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`;
+                    });
+
+                    toolCalls.push({
+                        id: `local_call_${Math.random().toString(36).slice(2, 11)}`,
+                        type: 'function',
+                        function: { name: toolName, arguments: sanitizedJson }
+                    });
+
+                    remnants.push({ start: toolCallStart, end: jsonEnd });
+                } catch (e) {
+                    console.warn(`[Local AI] Failed to parse args for ${toolName}:`, e);
+                }
+            }
+        }
+    }
+
+    // Sort remnants backwards to remove them without breaking indices
+    remnants.sort((a, b) => b.start - a.start);
+    for (const rem of remnants) {
+        cleanText = cleanText.substring(0, rem.start) + cleanText.substring(rem.end);
+    }
+
+    // Final scrub for any orphaned tags
+    cleanText = cleanText.replace(/\[TOOL_CALLS\]|\[ARGS\]/g, '').trim();
+
+    return { cleanText, toolCalls };
+}
+
 export async function chatWithLocalModel(
     messages: Message[],
     localModelUrl: string,
     userId?: string,
     userRole?: string
 ): Promise<{ text: string, didMutate: boolean }> {
-    // Normalize URL and ensure it has /v1
+    // Normalize URL
     let baseUrl = localModelUrl.endsWith('/') ? localModelUrl.slice(0, -1) : localModelUrl;
-    if (!baseUrl.endsWith('/v1')) {
-        baseUrl = `${baseUrl}/v1`;
-    }
+    if (!baseUrl.endsWith('/v1')) baseUrl = `${baseUrl}/v1`;
     const endpoint = `${baseUrl}/chat/completions`;
     const modelsEndpoint = `${baseUrl}/models`;
 
-    // Strictly enforce alternating roles (System -> User -> Assistant -> User)
+    // messages construction
     const apiMessages: { role: string, content: string }[] = [];
     let systemPromptText = SYSTEM_PROMPT + "\n\n";
-
-    // 1. Extract system prompt(s) from history if any
     for (const msg of messages) {
-        if (msg.role === 'system') {
-            systemPromptText += msg.content + "\n\n";
-        }
+        if (msg.role === 'system') systemPromptText += msg.content + "\n\n";
     }
-
     apiMessages.push({ role: 'system', content: systemPromptText.trim() });
 
-    // 2. Add conversational messages
     let lastRole = 'system';
     for (const msg of messages) {
         if (msg.role === 'system') continue;
@@ -192,9 +264,13 @@ export async function chatWithLocalModel(
             apiMessages[apiMessages.length - 1].content += "\n\n" + msg.content;
             continue;
         }
-        apiMessages.push({ role: msg.role, content: msg.content ?? '' });
+        apiMessages.push({ role: msg.role as any, content: msg.content ?? '' });
         lastRole = msg.role;
     }
+
+    let didMutate = false;
+    let turnCount = 0;
+    const MAX_TURNS = 5;
 
     try {
         let modelId = 'local-model';
@@ -206,111 +282,55 @@ export async function chatWithLocalModel(
             }
         } catch (e) { }
 
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: modelId,
-                messages: apiMessages,
-                tools: TOOLS,
-                tool_choice: 'auto',
-                temperature: 0 // Zero temp for deterministic tool calling
-            })
-        });
+        while (turnCount < MAX_TURNS) {
+            turnCount++;
+            console.log(`[Local AI] Turn ${turnCount}/${MAX_TURNS}...`);
 
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => '');
-            throw new Error(`Local model API error: ${response.status} - ${errorText}`);
-        }
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: modelId,
+                    messages: apiMessages,
+                    tools: turnCount === 1 ? TOOLS : undefined, // Native tool support usually only works on first pass for many local models
+                    temperature: turnCount === 1 ? 0 : 0.7
+                })
+            });
 
-        const data = await response.json();
-        if (!data || !data.choices || data.choices.length === 0) throw new Error("Invalid response");
+            if (!response.ok) throw new Error(`Local model API error: ${response.status}`);
+            const data = await response.json();
+            const assistantMsg = data.choices[0].message;
 
-        const assistantMessage = data.choices[0].message;
-
-        // --- DIAGNOSTICS ---
-        console.group('[Local AI] Model response');
-        console.log('finish_reason:', data.choices[0].finish_reason);
-        console.log('native tool_calls:', assistantMessage.tool_calls);
-        console.log('content preview:', assistantMessage.content?.slice(0, 200));
-        console.groupEnd();
-        // -------------------
-
-        // Regex-based approaches break on multi-line JSON because they stop at the first }
-        // instead of the MATCHING }. We use brace-counting instead.
-        // --- TOOL CALL EXTRACTION (REGEX BASED) ---
-        // Local models often add intro/outro text. We search the entire content for [TOOL_CALLS] patterns.
-        if (assistantMessage.content) {
-            assistantMessage.tool_calls = assistantMessage.tool_calls || [];
-            const combinedRegex = /\[TOOL_CALLS\](.*?)(?=\[TOOL_CALLS\]|\[ARGS\]|$)/g;
-            const argsRegex = /\[ARGS\](\{[\s\S]*?\})(?=\[TOOL_CALLS\]|$)/g;
-
-            let cleanContent = assistantMessage.content;
-            let match;
-
-            while ((match = combinedRegex.exec(assistantMessage.content)) !== null) {
-                const toolName = match[1].trim();
-                const toolCallStart = match.index;
-
-                // Move argsRegex to start looking after the current [TOOL_CALLS]
-                argsRegex.lastIndex = combinedRegex.lastIndex;
-                const argsMatch = argsRegex.exec(assistantMessage.content);
-
-                if (argsMatch && argsMatch.index < (combinedRegex.lastIndex + 50)) { // Ensure [ARGS] is close to [TOOL_CALLS]
-                    const jsonStr = argsMatch[1];
-                    try {
-                        // Sanitize and Parse
-                        const sanitizedJson = jsonStr.replace(/:\s*"([\s\S]*?)"/g, (_m: string, inner: string) => {
-                            return `: "${inner.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`;
-                        });
-
-                        assistantMessage.tool_calls.push({
-                            id: `local_call_${Math.random().toString(36).slice(2, 11)}`,
-                            type: 'function',
-                            function: { name: toolName, arguments: sanitizedJson }
-                        });
-
-                        // Removal: Remove from [TOOL_CALLS] up to the end of [ARGS]
-                        const fullMatchText = assistantMessage.content.substring(toolCallStart, argsRegex.lastIndex);
-                        cleanContent = cleanContent.replace(fullMatchText, '');
-                    } catch (e) {
-                        console.warn(`[Local AI] Failed to parse args for ${toolName}:`, e);
-                    }
-                }
+            // 1. Extract tool calls (Native + Tagged)
+            let currentToolCalls = assistantMsg.tool_calls || [];
+            if (assistantMsg.content) {
+                const { cleanText, toolCalls: taggedCalls } = extractToolCallsFromText(assistantMsg.content);
+                assistantMsg.content = cleanText;
+                currentToolCalls = [...currentToolCalls, ...taggedCalls];
             }
-            assistantMessage.content = cleanContent.replace(/\[TOOL_CALLS\]|\[ARGS\]/g, '').trim();
-        }
-        // -------------------------------------------
 
-        const sanitize = (obj: any) => {
-            const res = { ...obj };
-            for (const key in res) {
-                if (res[key] === '') res[key] = null;
+            // 2. If no tool calls, this is our final answer
+            if (currentToolCalls.length === 0) {
+                return { text: assistantMsg.content || '', didMutate };
             }
-            return res;
-        };
 
-        if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-            // Execute the tools
+            // 3. Execute tools
+            console.log(`[Local AI] Executing ${currentToolCalls.length} tools...`);
             const toolResults = [];
-            let didMutate = false;
-
-            for (const toolCall of assistantMessage.tool_calls) {
-                if (toolCall.type !== 'function') continue;
-
+            for (const toolCall of currentToolCalls) {
                 const name = toolCall.function.name;
                 let args: any;
                 try {
-                    args = JSON.parse(toolCall.function.arguments);
+                    args = typeof toolCall.function.arguments === 'string'
+                        ? JSON.parse(toolCall.function.arguments)
+                        : toolCall.function.arguments;
                 } catch (e) {
-                    console.error(`[Local AI] Executor: could not parse args for ${name}:`, toolCall.function.arguments);
+                    console.error(`[Local AI] Failed to parse args for ${name}`);
                     continue;
                 }
-                let result = null;
 
-                if (!['get_tasks', 'get_projects', 'get_team_members', 'get_metrics', 'get_realtime_info', 'create_task', 'update_task', 'delete_task', 'log_time'].includes(name)) {
-                    result = { error: `Tool '${name}' is not available in local mode.` };
-                } else try {
+                let result: any = null;
+                try {
                     if (name === 'get_tasks') {
                         const { data, error } = await supabase.from('tasks').select('*, projects(name)').is('deleted_at', null).order('created_at', { ascending: false });
                         result = error ? { error: error.message } : { tasks: data };
@@ -325,118 +345,33 @@ export async function chatWithLocalModel(
                         const totalHours = data?.reduce((sum, log) => sum + (log.hours || 0), 0) || 0;
                         result = error ? { error: error.message } : { total_hours_logged: totalHours };
                     } else if (name === 'get_realtime_info') {
-                        try {
-                            const geoRes = await fetch('https://get.geojs.io/v1/ip/geo.json');
-                            const geoData = await geoRes.json();
-                            const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${geoData.latitude}&longitude=${geoData.longitude}&current_weather=true`);
-                            const weatherData = await weatherRes.json();
-                            const now = new Date();
-                            result = {
-                                location: `${geoData.city}, ${geoData.country}`,
-                                current_date: now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-                                current_time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                                weather: weatherData.current_weather
-                            };
-                        } catch (e: any) {
-                            result = { error: `Failed to fetch realtime info: ${e.message}` };
-                        }
+                        const now = new Date();
+                        result = {
+                            current_date: now.toLocaleDateString(),
+                            current_time: now.toLocaleTimeString()
+                        };
                     } else if (name === 'create_task') {
-                        const taskPayload = { ...args };
-
-                        // Reliability Enhancement: Resolve project_id from name if it's not a UUID
-                        if (taskPayload.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskPayload.project_id)) {
-                            console.log(`[Local AI RELIABILITY] Attempting to resolve project name: "${taskPayload.project_id}"`);
-                            const { data: proj } = await supabase.from('projects')
-                                .select('id')
-                                .ilike('name', taskPayload.project_id.trim())
-                                .is('deleted_at', null)
-                                .limit(1)
-                                .single();
-
-                            if (proj) {
-                                console.log(`[Local AI RELIABILITY] Resolved "${taskPayload.project_id}" to ${proj.id}`);
-                                taskPayload.project_id = proj.id;
-                            } else {
-                                // Fallback to most recent project
-                                const { data: recentProj } = await supabase.from('projects')
-                                    .select('id')
-                                    .is('deleted_at', null)
-                                    .order('created_at', { ascending: false })
-                                    .limit(1)
-                                    .single();
-                                if (recentProj) {
-                                    console.warn(`[Local AI RELIABILITY] Project "${taskPayload.project_id}" not found. Falling back to ${recentProj.id}`);
-                                }
-                            }
-                        }
-
-                        // Merge Date and Time
-                        if (taskPayload.start_date && taskPayload.start_time) {
-                            taskPayload.start_date = `${taskPayload.start_date.split('T')[0]}T${taskPayload.start_time}:00`;
-                        } else if (taskPayload.start_time) {
-                            taskPayload.start_date = `${new Date().toISOString().split('T')[0]}T${taskPayload.start_time}:00`;
-                        }
-
-                        if (taskPayload.due_date && taskPayload.due_time) {
-                            taskPayload.due_date = `${taskPayload.due_date.split('T')[0]}T${taskPayload.due_time}:00`;
-                        } else if (taskPayload.due_time) {
-                            taskPayload.due_date = `${new Date().toISOString().split('T')[0]}T${taskPayload.due_time}:00`;
-                        }
-
-                        // Remove helper fields
-                        delete taskPayload.start_time;
-                        delete taskPayload.due_time;
-
-                        const { error, data } = await supabase.from('tasks').insert([{ ...taskPayload, user_id: userId }]).select();
+                        const { error, data } = await supabase.from('tasks').insert([{ ...args, user_id: userId }]).select();
                         if (!error) didMutate = true;
                         result = error ? { error: error.message } : { success: true, task: data[0] };
-
-                        // Local Action Logging
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'create_task (local)', details: args, outcome: result, user_id: userId }]);
                     } else if (name === 'update_task') {
-                        const updates = sanitize(args);
-                        const { task_id, ...otherUpdates } = updates;
-
-                        // Merge Date and Time
-                        if (otherUpdates.start_date && otherUpdates.start_time) {
-                            otherUpdates.start_date = `${otherUpdates.start_date.split('T')[0]}T${otherUpdates.start_time}:00`;
-                        }
-                        if (otherUpdates.due_date && otherUpdates.due_time) {
-                            otherUpdates.due_date = `${otherUpdates.due_date.split('T')[0]}T${otherUpdates.due_time}:00`;
-                        }
-
-                        // Remove helper fields
-                        delete (otherUpdates as any).start_time;
-                        delete (otherUpdates as any).due_time;
-
-                        const { error } = await supabase.from('tasks').update(otherUpdates).eq('id', task_id);
+                        const { task_id, ...updates } = args;
+                        const { error } = await supabase.from('tasks').update(updates).eq('id', task_id);
                         if (!error) didMutate = true;
                         result = error ? { error: error.message } : { success: true };
-
-                        // Local Action Logging
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'update_task (local)', details: args, outcome: result, user_id: userId }]);
                     } else if (name === 'delete_task') {
-                        if (!args.confirmed) {
-                            result = { error: "Confirmation required for deletion." };
-                        } else {
+                        if (!args.confirmed) result = { error: "Confirmation required." };
+                        else {
                             const { error } = await supabase.from('tasks').update({ deleted_at: new Date().toISOString() }).eq('id', args.task_id);
                             if (!error) didMutate = true;
                             result = error ? { error: error.message } : { success: true };
                         }
                     } else if (name === 'log_time') {
-                        const entry = {
-                            task_id: args.task_id,
-                            hours: args.hours,
-                            date: args.date || new Date().toISOString().split('T')[0],
-                            user_id: userId
-                        };
-                        const { error } = await supabase.from('time_logs').insert([entry]);
+                        const { error } = await supabase.from('time_logs').insert([{ ...args, user_id: userId }]);
                         if (!error) didMutate = true;
                         result = error ? { error: error.message } : { success: true };
                     }
-                } catch (e: any) {
-                    result = { error: e.message };
-                }
+                } catch (e: any) { result = { error: e.message }; }
 
                 toolResults.push({
                     tool_call_id: toolCall.id,
@@ -446,37 +381,12 @@ export async function chatWithLocalModel(
                 });
             }
 
-            // Second round trip to the model with the tool results
-            apiMessages.push(assistantMessage);
-            apiMessages.push(...toolResults as any[]);
-
-            const finalResponse = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: modelId,
-                    messages: apiMessages,
-                    temperature: 0.7
-                })
-            });
-
-            if (!finalResponse.ok) {
-                throw new Error(`Local model API error (2nd pass): ${finalResponse.statusText}`);
-            }
-
-            const finalData = await finalResponse.json();
-            if (!finalData || !finalData.choices || finalData.choices.length === 0) {
-                console.error('Invalid response from Local Model API (2nd pass):', finalData);
-                throw new Error(`Local model returned an invalid response during the second pass.`);
-            }
-
-            const finalReply = finalData.choices[0].message.content;
-            console.log(`[Local AI] Final Reply: "${finalReply.slice(0, 50)}..."`);
-            return { text: finalReply, didMutate };
+            // 4. Update history and loop
+            apiMessages.push({ role: 'assistant', content: assistantMsg.content || '', ...((assistantMsg as any).tool_calls ? { tool_calls: (assistantMsg as any).tool_calls } : {}) } as any);
+            apiMessages.push(...(toolResults as any[]));
         }
 
-        console.log(`[Local AI] Chat Reply: "${assistantMessage.content.slice(0, 50)}..."`);
-        return { text: assistantMessage.content, didMutate: false };
+        return { text: "I've performed several actions but reached my thinking limit. Please check the results.", didMutate };
 
     } catch (error) {
         console.error('Error communicating with Local Model:', error);

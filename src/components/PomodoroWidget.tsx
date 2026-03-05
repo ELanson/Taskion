@@ -38,7 +38,7 @@ export const PomodoroWidget: React.FC<PomodoroWidgetProps> = ({ onOpenFocusMode 
     const circumference = 2 * Math.PI * radius;
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const safeTasks = Array.isArray(tasks) ? tasks : [];
-    const selectedTask = safeTasks.find(t => t.id === selectedTaskId);
+    const selectedTask = safeTasks.find(t => String(t.id) === selectedTaskId);
 
     const tick = useCallback(() => {
         setPomodoroState(prev => {
