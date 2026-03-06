@@ -31,8 +31,26 @@ function getVertexAI() {
     });
 }
 
-const SYSTEM_PROMPT = `You are Yuki-Search, an elite B2B lead generation researcher powered by Gemini 2.5 Pro.
-Your task is to analyze the user's search query and generate a minimum of 5 highly realistic, verified-sounding business leads that perfectly match their criteria.
+
+
+export default async function handler(req: any, res: any) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+    try {
+        const { query, maxResults = 5 } = req.body;
+        if (!query) return res.status(400).json({ error: "Search query is required" });
+
+        if (!vertexConfig) {
+            return res.status(500).json({ error: "Vertex AI credentials (.env.vertex.json) not found on server" });
+        }
+
+        const dynamicPrompt = `You are Yuki-Search, an elite B2B lead generation researcher powered by Gemini 2.5 Pro.
+Your task is to analyze the user's search query and generate exactly ${maxResults} highly realistic, verified-sounding business leads that perfectly match their criteria.
 
 You MUST respond with a raw JSON array of objects. NEVER use markdown code blocks (\`\`\`json \`\`\`). Do not include any text before or after the JSON array.
 
@@ -51,32 +69,16 @@ Each object in the array must strictly follow this structure:
 
 If the user asks for specific industries, roles, or locations, invent plausible companies, contact names, and details that fit perfectly. Make the data look professional and realistic.`;
 
-export default async function handler(req: any, res: any) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-    if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-    try {
-        const { query } = req.body;
-        if (!query) return res.status(400).json({ error: "Search query is required" });
-
-        if (!vertexConfig) {
-            return res.status(500).json({ error: "Vertex AI credentials (.env.vertex.json) not found on server" });
-        }
-
         const vertexAI = getVertexAI();
         const model = vertexAI.getGenerativeModel({
             model: 'gemini-2.5-pro',
-            systemInstruction: { role: 'system', parts: [{ text: SYSTEM_PROMPT }] },
+            systemInstruction: { role: 'system', parts: [{ text: dynamicPrompt }] },
             generationConfig: {
                 responseMimeType: "application/json",
             }
         });
 
-        console.log(`[TEAKEL SEARCH] Query: "${query}"`);
+        console.log(`[TEAKEL SEARCH] Query: "${query}" | maxResults: ${maxResults}`);
 
         const result = await model.generateContent({
             contents: [{ role: 'user', parts: [{ text: query }] }]

@@ -1691,67 +1691,87 @@ export default function App() {
                 {/* All tasks (kanban cards) */}
                 {tasksView === 'all' && (
                   <div className={`grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6 pb-20 mt-4 transition-opacity duration-300 ${isRefreshing ? 'opacity-50' : 'opacity-100'}`}>
-                    {(Array.isArray(tasks) ? tasks : []).map(task => (
-                      <motion.div
-                        layout
-                        key={task.id}
-                        className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} p-6 rounded-2xl border shadow-sm hover:shadow-md transition-shadow group relative`}
-                      >
-                        <div className="absolute top-4 right-4 flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-20">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenModal(task);
-                            }}
-                            className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-indigo-400 hover:bg-gray-800' : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'} rounded-lg transition-all cursor-pointer`}
-                          >
-                            <Edit2 size={14} />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteTask(task.id);
-                            }}
-                            className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-red-400 hover:bg-gray-800' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'} rounded-lg transition-all cursor-pointer`}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                        <div className="flex justify-between items-start mb-4 pr-14">
-                          <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${getPriorityColor(task.priority)}`}>
-                            {task.priority}
-                          </span>
-                          <span className="text-xs text-gray-500">{new Date(task.created_at).toLocaleDateString()}</span>
-                        </div>
-                        <h4 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-2 pr-12`}>{task.title}</h4>
-                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} line-clamp-2 mb-4`}>{task.description}</p>
-                        <div className={`flex items-center justify-between pt-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-50'}`}>
-                          <div className="flex items-center gap-4 text-xs text-gray-500">
-                            <div className="flex items-center gap-1">
-                              <Clock size={14} />
-                              <span>{task.estimated_hours}h est.</span>
-                            </div>
+                    {(Array.isArray(tasks) ? tasks : []).map(task => {
+                      const isOverdue = !!(task.due_date && task.status !== 'done' && new Date(task.due_date) < new Date());
+                      return (
+                        <motion.div
+                          layout
+                          key={task.id}
+                          className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'
+                            } p-6 rounded-2xl border shadow-sm hover:shadow-md transition-shadow group relative overflow-hidden ${isOverdue ? 'border-red-500/30' : ''
+                            }`}
+                        >
+                          {/* Overdue pulsing right-edge stroke */}
+                          {isOverdue && (
+                            <>
+                              <span className="absolute top-0 right-0 h-full w-[3px] rounded-r-2xl bg-gradient-to-b from-red-400 via-red-500 to-red-400 animate-pulse z-10" />
+                              <span className="absolute top-0 right-0 h-full w-6 rounded-r-2xl bg-gradient-to-l from-red-500/20 to-transparent animate-pulse z-10" />
+                            </>
+                          )}
+                          <div className="absolute top-4 right-4 flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-20">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleOpenTimeLogModal(task.id);
+                                handleOpenModal(task);
                               }}
-                              className="flex items-center gap-1 text-indigo-500 hover:text-indigo-400 font-medium cursor-pointer"
+                              className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-indigo-400 hover:bg-gray-800' : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'} rounded-lg transition-all cursor-pointer`}
                             >
-                              <Plus size={12} /> Log Time
+                              <Edit2 size={14} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTask(task.id);
+                              }}
+                              className={`p-1.5 ${isDarkMode ? 'text-gray-500 hover:text-red-400 hover:bg-gray-800' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'} rounded-lg transition-all cursor-pointer`}
+                            >
+                              <Trash2 size={14} />
                             </button>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <div className={`px-3 py-1 rounded-full text-xs font-medium ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') :
-                              task.status === 'in_progress' ? (isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600') :
-                                (isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600')
-                              }`}>
-                              {task.status.replace('_', ' ')}
+                          <div className="flex justify-between items-start mb-4 pr-14">
+                            <div className="flex flex-col gap-1.5">
+                              <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border w-fit ${getPriorityColor(task.priority)}`}>
+                                {task.priority}
+                              </span>
+                              {isOverdue && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-md bg-red-500/15 border border-red-500/30 text-red-400 w-fit">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+                                  Overdue
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs text-gray-500">{new Date(task.created_at).toLocaleDateString()}</span>
+                          </div>
+                          <h4 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-2 pr-12`}>{task.title}</h4>
+                          <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} line-clamp-2 mb-4`}>{task.description}</p>
+                          <div className={`flex items-center justify-between pt-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-50'}`}>
+                            <div className="flex items-center gap-4 text-xs text-gray-500">
+                              <div className="flex items-center gap-1">
+                                <Clock size={14} />
+                                <span>{task.estimated_hours}h est.</span>
+                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenTimeLogModal(task.id);
+                                }}
+                                className="flex items-center gap-1 text-indigo-500 hover:text-indigo-400 font-medium cursor-pointer"
+                              >
+                                <Plus size={12} /> Log Time
+                              </button>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <div className={`px-3 py-1 rounded-full text-xs font-medium ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') :
+                                task.status === 'in_progress' ? (isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600') :
+                                  (isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600')
+                                }`}>
+                                {task.status.replace('_', ' ')}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </motion.div>
-                    ))}
+                        </motion.div>
+                      );
+                    })}
                     {tasks.length === 0 && (
                       <div className="col-span-full py-20 text-center">
                         <div className={`w-16 h-16 ${isDarkMode ? 'bg-gray-800 text-gray-700' : 'bg-gray-50 text-gray-300'} rounded-2xl flex items-center justify-center mx-auto mb-4`}>

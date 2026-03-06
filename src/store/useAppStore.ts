@@ -111,8 +111,43 @@ export interface Lead {
     role: string;
     website: string;
     address: string;
-    source: 'scraping' | 'vision' | 'manual';
+    source: 'scraping' | 'vision' | 'manual' | 'search';
     created_at: string;
+}
+
+export interface DuplicateReview {
+    id: string; // original lead ID
+    original: Lead;
+    incoming: Lead;
+    timestamp: number;
+}
+
+export interface SearchHistoryItem {
+    id: string;
+    query: string;
+    timestamp: number;
+    resultCount: number;
+    starred: boolean;
+    campaignId?: string; // optional campaign association
+}
+
+export interface Campaign {
+    id: string;
+    name: string;
+    description?: string;
+    color: string; // tailwind color name like 'emerald', 'indigo', 'amber'
+    created_at: string;
+    searchIds: string[]; // search history IDs associated
+    leadCount: number;
+}
+
+export interface HuntStats {
+    sessionLeads: number;
+    sessionDuplicates: number;
+    sessionSearchCount: number;
+    sessionStartTime: number | null;
+    lastSearchDuration: number; // ms
+    sourcesHit: string[];
 }
 
 export interface WorkspaceSettings {
@@ -192,13 +227,19 @@ interface AppState {
     messages: Message[];
     aiActionLogs: any[];
     leads: Lead[];
+    yukiIsSearching: boolean;
+    yukiIsScanning: boolean;
+    yukiSearchController: AbortController | null;
+    yukiVisionController: AbortController | null;
+    yukiMaxResults: number;
+    pendingDuplicateReviews: DuplicateReview[];
 
     // UI State
     input: string;
     isLoading: boolean;
     isRefreshing: boolean;
     activeTab: 'dashboard' | 'tasks' | 'reports' | 'analytics' | 'team' | 'support' | 'leads';
-    teakelActiveTab: 'search' | 'vision' | 'list' | 'reports' | 'settings';
+    teakelActiveTab: 'search' | 'vision' | 'list' | 'reports' | 'campaigns' | 'settings';
 
     // Modals & Editing
     isModalOpen: boolean;
@@ -319,7 +360,32 @@ interface AppState {
     // Actions
     timeLogs: any[]; // Store full time logs for metric calculations
     setLeads: (leads: Lead[]) => void;
-    addLead: (lead: Omit<Lead, 'id' | 'created_at'>) => void;
+    fetchLeads: () => Promise<void>;
+    addLead: (lead: Omit<Lead, 'id' | 'created_at'>) => Promise<void>;
+    deleteLead: (leadId: string) => Promise<void>;
+    // Teakel Background & Duplicate Actions
+    setYukiMaxResults: (max: number) => void;
+    yukiStreamLeads: Lead[];          // live feed for current session
+    clearYukiStream: () => void;
+    searchHistory: SearchHistoryItem[];
+    addSearchHistory: (item: Omit<SearchHistoryItem, 'id'>) => void;
+    toggleStarSearch: (id: string) => void;
+    clearSearchHistory: () => void;
+    // Campaign Manager
+    campaigns: Campaign[];
+    activeCampaignId: string | null;
+    setActiveCampaignId: (id: string | null) => void;
+    createCampaign: (name: string, description: string, color: string) => string;
+    deleteCampaign: (id: string) => void;
+    updateCampaign: (id: string, patch: Partial<Campaign>) => void;
+    // Hunt Statistics
+    huntStats: HuntStats;
+    resetHuntStats: () => void;
+    startYukiSearch: (query: string) => Promise<void>;
+    stopYukiSearch: () => void;
+    startYukiVision: (base64: string, mimeType: string) => Promise<void>;
+    stopYukiVision: () => void;
+    resolveDuplicate: (id: string, action: 'keep_original' | 'overwrite_new' | 'merge', mergedData?: Partial<Lead>) => Promise<void>;
     setTeakelActiveTab: (tab: AppState['teakelActiveTab']) => void;
     setTasks: (tasks: Task[]) => void;
     setProjects: (projects: Project[]) => void;
@@ -438,6 +504,24 @@ export const useAppStore = create<AppState>()(
             activeTab: 'dashboard',
             teakelActiveTab: 'search',
             leads: [],
+            yukiIsSearching: false,
+            yukiIsScanning: false,
+            yukiSearchController: null,
+            yukiVisionController: null,
+            yukiMaxResults: 5,
+            pendingDuplicateReviews: [],
+            yukiStreamLeads: [],
+            searchHistory: [],
+            campaigns: [],
+            activeCampaignId: null,
+            huntStats: {
+                sessionLeads: 0,
+                sessionDuplicates: 0,
+                sessionSearchCount: 0,
+                sessionStartTime: null,
+                lastSearchDuration: 0,
+                sourcesHit: []
+            },
             appointments: [],
             dayPlan: null,
 
@@ -621,12 +705,282 @@ export const useAppStore = create<AppState>()(
             setActiveTab: (activeTab) => set({ activeTab }),
             setTeakelActiveTab: (teakelActiveTab) => set({ teakelActiveTab }),
             setLeads: (leads) => set({ leads }),
-            addLead: (lead) => set((state) => ({
-                leads: [
-                    { ...lead, id: Math.random().toString(36).substring(7), created_at: new Date().toISOString() },
-                    ...state.leads
-                ]
+            setYukiMaxResults: (max) => set({ yukiMaxResults: max }),
+            clearYukiStream: () => set({ yukiStreamLeads: [] }),
+            addSearchHistory: (item) => set((s) => ({
+                searchHistory: [{ ...item, id: crypto.randomUUID() }, ...s.searchHistory].slice(0, 50)
             })),
+            toggleStarSearch: (id) => set((s) => ({
+                searchHistory: s.searchHistory.map(h => h.id === id ? { ...h, starred: !h.starred } : h)
+            })),
+            clearSearchHistory: () => set({ searchHistory: [] }),
+            // Campaign actions
+            setActiveCampaignId: (activeCampaignId) => set({ activeCampaignId }),
+            createCampaign: (name, description, color) => {
+                const id = crypto.randomUUID();
+                set((s) => ({
+                    campaigns: [{ id, name, description, color, created_at: new Date().toISOString(), searchIds: [], leadCount: 0 }, ...s.campaigns]
+                }));
+                return id;
+            },
+            deleteCampaign: (id) => set((s) => ({
+                campaigns: s.campaigns.filter(c => c.id !== id),
+                activeCampaignId: s.activeCampaignId === id ? null : s.activeCampaignId
+            })),
+            updateCampaign: (id, patch) => set((s) => ({
+                campaigns: s.campaigns.map(c => c.id === id ? { ...c, ...patch } : c)
+            })),
+            resetHuntStats: () => set({ huntStats: { sessionLeads: 0, sessionDuplicates: 0, sessionSearchCount: 0, sessionStartTime: null, lastSearchDuration: 0, sourcesHit: [] } }),
+
+            fetchLeads: async () => {
+                const uid = get().user?.id;
+                if (!uid) return;
+                const { data, error } = await supabase
+                    .from('teakel_leads')
+                    .select('*')
+                    .order('created_at', { ascending: false });
+                if (!error && data) {
+                    set({ leads: data as Lead[] });
+                }
+            },
+
+            addLead: async (leadData) => {
+                const uid = get().user?.id;
+                const state = get();
+
+                // Build a temporary lead for duplicate detection against local cache
+                const tempLead = {
+                    ...leadData,
+                    id: crypto.randomUUID(),
+                    created_at: new Date().toISOString()
+                } as Lead;
+
+                // Duplicate Detection against current in-memory leads
+                const existingLead = state.leads.find(l =>
+                    (tempLead.email && l.email?.toLowerCase() === tempLead.email?.toLowerCase()) ||
+                    (tempLead.phone && l.phone?.replace(/[^0-9]/g, '') === tempLead.phone?.replace(/[^0-9]/g, ''))
+                );
+
+                if (existingLead) {
+                    const newDuplicate: DuplicateReview = {
+                        id: existingLead.id,
+                        original: existingLead,
+                        incoming: tempLead,
+                        timestamp: Date.now()
+                    };
+                    set((s) => ({ pendingDuplicateReviews: [...s.pendingDuplicateReviews, newDuplicate] }));
+                    return;
+                }
+
+                if (!uid) {
+                    // Not logged in — store in local state only
+                    set((s) => ({ leads: [tempLead, ...s.leads] }));
+                    return;
+                }
+
+                const { data, error } = await supabase
+                    .from('teakel_leads')
+                    .insert([{ ...leadData, user_id: uid }])
+                    .select()
+                    .single();
+
+                if (error) {
+                    console.error('Failed to save lead:', error);
+                    get().addNotification({ type: 'error', title: 'Save Failed', body: 'Could not save lead to database.' });
+                } else if (data) {
+                    set((s) => ({ leads: [data as Lead, ...s.leads] }));
+                }
+            },
+
+            deleteLead: async (leadId: string) => {
+                const uid = get().user?.id;
+                set((s) => ({ leads: s.leads.filter(l => l.id !== leadId) }));
+                if (uid) {
+                    await supabase.from('teakel_leads').delete().eq('id', leadId).eq('user_id', uid);
+                }
+            },
+
+            resolveDuplicate: async (duplicateId, action, mergedData) => {
+                const state = get();
+                const reviews = [...state.pendingDuplicateReviews];
+                const index = reviews.findIndex(r => r.id === duplicateId);
+                if (index === -1) return;
+
+                const review = reviews[index];
+                reviews.splice(index, 1);
+                set({ pendingDuplicateReviews: reviews });
+
+                if (action === 'keep_original') return;
+
+                const uid = get().user?.id;
+
+                if (action === 'overwrite_new') {
+                    const updatedLead = { ...review.incoming, id: review.original.id, created_at: review.original.created_at };
+                    set((s) => ({
+                        leads: s.leads.map(l => l.id === duplicateId ? updatedLead : l)
+                    }));
+                    if (uid) {
+                        const { id, created_at, ...fields } = updatedLead;
+                        await supabase.from('teakel_leads').update(fields).eq('id', duplicateId).eq('user_id', uid);
+                    }
+                } else if (action === 'merge' && mergedData) {
+                    const merged = { ...review.original, ...mergedData };
+                    set((s) => ({
+                        leads: s.leads.map(l => l.id === duplicateId ? merged : l)
+                    }));
+                    if (uid) {
+                        const { id, created_at, user_id, ...fields } = merged as any;
+                        await supabase.from('teakel_leads').update(fields).eq('id', duplicateId).eq('user_id', uid);
+                    }
+                }
+            },
+
+            startYukiSearch: async (query: string) => {
+                const state = get();
+                if (state.yukiIsSearching) return;
+
+                const controller = new AbortController();
+                const searchStart = Date.now();
+                // Init session start time if first search
+                set((s) => ({
+                    yukiIsSearching: true,
+                    yukiSearchController: controller,
+                    yukiStreamLeads: [],
+                    huntStats: {
+                        ...s.huntStats,
+                        sessionStartTime: s.huntStats.sessionStartTime ?? Date.now(),
+                        sessionSearchCount: s.huntStats.sessionSearchCount + 1,
+                    }
+                }));
+
+                try {
+                    const token = process.env.VITE_SUPABASE_ANON_KEY || 'dummy';
+                    const { yukiMaxResults, activeCampaignId } = get();
+
+                    const response = await fetch('/api/teakel-search', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ query, maxResults: yukiMaxResults }),
+                        signal: controller.signal
+                    });
+
+                    if (!response.ok) throw new Error('Failed to execute search');
+
+                    const data = await response.json();
+                    const leads: any[] = data.leads || [];
+                    const duration = Date.now() - searchStart;
+
+                    if (leads.length > 0) {
+                        for (const l of leads) {
+                            if (get().yukiSearchController !== controller) break;
+                            const streamLead = { ...l, source: 'search', id: crypto.randomUUID(), created_at: new Date().toISOString() } as Lead;
+                            set((s) => ({ yukiStreamLeads: [...s.yukiStreamLeads, streamLead] }));
+                            await new Promise(r => setTimeout(r, 120));
+                        }
+                        leads.forEach((l: any) => get().addLead({ ...l, source: 'search' }));
+                        const historyId = crypto.randomUUID();
+                        set((s) => ({
+                            searchHistory: [{ id: historyId, query, timestamp: Date.now(), resultCount: leads.length, starred: false, campaignId: activeCampaignId ?? undefined }, ...s.searchHistory].slice(0, 50),
+                            huntStats: {
+                                ...s.huntStats,
+                                sessionLeads: s.huntStats.sessionLeads + leads.length,
+                                lastSearchDuration: duration,
+                                sourcesHit: [...new Set([...s.huntStats.sourcesHit, 'web-search'])]
+                            },
+                            // Update campaign leadCount
+                            campaigns: activeCampaignId
+                                ? s.campaigns.map(c => c.id === activeCampaignId
+                                    ? { ...c, leadCount: c.leadCount + leads.length, searchIds: [...c.searchIds, historyId] }
+                                    : c)
+                                : s.campaigns
+                        }));
+                        get().addNotification({ type: 'success', title: 'Search Complete', body: `Found ${leads.length} leads for "${query}".` });
+                    } else {
+                        set((s) => ({
+                            searchHistory: [{ id: crypto.randomUUID(), query, timestamp: Date.now(), resultCount: 0, starred: false, campaignId: activeCampaignId ?? undefined }, ...s.searchHistory].slice(0, 50),
+                            huntStats: { ...s.huntStats, lastSearchDuration: duration }
+                        }));
+                        get().addNotification({ type: 'info', title: 'Search Complete', body: 'No leads found.' });
+                    }
+                } catch (error: any) {
+                    if (error.name === 'AbortError') {
+                        get().addNotification({ type: 'warning', title: 'Search Stopped', body: 'Lead extraction was halted.' });
+                    } else {
+                        console.error("YukiSearch error:", error);
+                        get().addNotification({ type: 'error', title: 'Search Failed', body: error.message || 'An error occurred during search.' });
+                    }
+                } finally {
+                    set((s) => s.yukiSearchController === controller ? { yukiIsSearching: false, yukiSearchController: null } : s);
+                }
+            },
+
+            stopYukiSearch: () => {
+                const { yukiSearchController } = get();
+                if (yukiSearchController) {
+                    yukiSearchController.abort();
+                    set({ yukiIsSearching: false, yukiSearchController: null });
+                }
+            },
+
+            startYukiVision: async (base64Data: string, mimeType: string) => {
+                const state = get();
+                if (state.yukiIsScanning) return;
+
+                const controller = new AbortController();
+                set({ yukiIsScanning: true, yukiVisionController: controller });
+
+                try {
+                    const token = process.env.VITE_SUPABASE_ANON_KEY || 'dummy';
+
+                    const response = await fetch('/api/teakel-vision', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ imageBase64: base64Data, mimeType }),
+                        signal: controller.signal
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to extract data');
+                    }
+
+                    const data = await response.json();
+                    const extractedLead = data.lead;
+
+                    if (extractedLead && (extractedLead.name || extractedLead.company || extractedLead.email)) {
+                        get().addLead({ ...extractedLead, source: 'vision' });
+                        get().addNotification({
+                            type: 'success',
+                            title: 'Scan Successful',
+                            body: `Extracted data for ${extractedLead.name || extractedLead.company || 'new lead'}.`
+                        });
+                    } else {
+                        get().addNotification({ type: 'warning', title: 'Scan Complete', body: "Couldn't confidently extract lead info." });
+                    }
+                } catch (error: any) {
+                    if (error.name === 'AbortError') {
+                        get().addNotification({ type: 'warning', title: 'Scan Stopped', body: 'Image scanning was halted.' });
+                    } else {
+                        console.error("YukiVision error:", error);
+                        get().addNotification({ type: 'error', title: 'Scan Failed', body: error.message || 'An error occurred while scanning.' });
+                    }
+                } finally {
+                    set((s) => s.yukiVisionController === controller ? { yukiIsScanning: false, yukiVisionController: null } : s);
+                }
+            },
+
+            stopYukiVision: () => {
+                const { yukiVisionController } = get();
+                if (yukiVisionController) {
+                    yukiVisionController.abort();
+                    set({ yukiIsScanning: false, yukiVisionController: null });
+                }
+            },
             setPomodoroState: (patch) => set((state) => ({
                 pomodoroState: typeof patch === 'function'
                     ? patch(state.pomodoroState)
@@ -1474,7 +1828,8 @@ export const useAppStore = create<AppState>()(
                 isDarkMode: state.isDarkMode,
                 useLocalModel: state.useLocalModel,
                 localModelUrl: state.localModelUrl,
-                geminiApiKey: state.geminiApiKey
+                geminiApiKey: state.geminiApiKey,
+                yukiMaxResults: state.yukiMaxResults
             })
         }
     )
