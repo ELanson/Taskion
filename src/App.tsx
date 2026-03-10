@@ -90,7 +90,7 @@ import { NotificationBell } from './components/NotificationBell';
 import { NotificationModal } from './components/NotificationModal';
 import {
   DashboardWeatherCard, DashboardTrafficCard,
-  WeatherModal, TrafficModal, useEnvironmentalData
+  WeatherModal, TrafficModal, useEnvironmentalData, WeatherLottie
 } from './components/EnvironmentalIntelligence';
 import { WorkflowModule } from './components/WorkflowModule';
 import ReactMarkdown from 'react-markdown';
@@ -1644,12 +1644,12 @@ export default function App() {
                           <>
                             <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800' : 'bg-gray-50 border-gray-100'} flex items-center justify-between`}>
                               <div className="flex items-center gap-3">
-                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>
-                                  <CloudRain size={16} />
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden ${isDarkMode ? 'bg-blue-500/10' : 'bg-blue-50'}`}>
+                                  <WeatherLottie condition={weather.condition} className="w-10 h-10" />
                                 </div>
                                 <div>
-                                  <p className={`text-sm font-bold ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>{weather.location} Forecast</p>
-                                  <p className="text-xs text-gray-500 font-medium">{weather.condition}, {weather.temp}°C</p>
+                                  <p className={`text-xs font-black ${isDarkMode ? 'text-white' : 'text-gray-900'} leading-tight`}>{weather.temp}° {weather.condition}</p>
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">{weather.location}</p>
                                 </div>
                               </div>
                             </div>

@@ -40,6 +40,7 @@ export interface TrafficData {
     incidents: string[];
     route: string;
     delayReason?: string;
+    impactAreas: { center: [number, number]; color: string; label: string }[];
     operationalInsights?: {
         department: string;
         level: 'LOW' | 'MEDIUM' | 'HIGH';
@@ -84,71 +85,166 @@ export const useEnvironmentalData = () => {
         const fetchMockData = () => {
             setLoading(true);
             setTimeout(() => {
+                const now = new Date();
+                const currentHour = now.getHours();
+
+                // Helper to generate dynamic hourly forecast
+                const generateHourlyForecast = () => {
+                    const hours: { time: string; temp: number; icon: 'sun' | 'cloud' | 'rain' | 'storm' }[] = [];
+                    for (let i = 0; i < 5; i++) {
+                        const targetDate = new Date();
+                        targetDate.setHours(currentHour + i);
+                        const hour = targetDate.getHours();
+                        const timeLabel = i === 0 ? 'Now' : `${hour > 12 ? hour - 12 : (hour === 0 ? 12 : hour)}${hour >= 12 ? 'PM' : 'AM'}`;
+
+                        // Logical temp variation based on hour
+                        const baseTemp = 23;
+                        let tempAdjust = 0;
+                        if (hour >= 6 && hour <= 18) {
+                            tempAdjust = 5 - Math.abs(hour - 14) * 0.8;
+                        } else {
+                            const nightHour = hour < 6 ? hour : hour - 24;
+                            tempAdjust = -3 + Math.abs(nightHour - 4) * 0.5;
+                        }
+
+                        // Condition logic
+                        let icon: 'sun' | 'cloud' | 'rain' | 'storm' = 'sun';
+                        if (hour >= 13 && hour <= 17) icon = 'rain';
+                        else if (hour >= 18 || hour <= 7) icon = 'cloud';
+
+                        hours.push({
+                            time: timeLabel,
+                            temp: Math.round(baseTemp + tempAdjust),
+                            icon
+                        });
+                    }
+                    return hours;
+                };
+
+                const hourlyData = generateHourlyForecast();
+                const currentConditions = hourlyData[0];
+
                 setWeather({
-                    temp: 23,
-                    condition: 'Rain',
-                    rainChance: 60,
-                    windSpeed: 12,
+                    temp: currentConditions.temp,
+                    condition: currentConditions.icon === 'rain' ? 'Rain' : (currentConditions.icon === 'sun' ? 'Sunny' : (currentConditions.icon === 'storm' ? 'Storm' : 'Cloudy')),
+                    rainChance: currentConditions.icon === 'rain' ? 75 : (currentConditions.icon === 'cloud' ? 30 : 5),
+                    windSpeed: 12 + Math.floor(Math.random() * 5),
                     location: 'Nairobi',
-                    humidity: 78,
-                    uvIndex: 3,
-                    hourly: [
-                        { time: 'Now', temp: 23, icon: 'rain' },
-                        { time: '1PM', temp: 23, icon: 'rain' },
-                        { time: '2PM', temp: 22, icon: 'cloud' },
-                        { time: '3PM', temp: 25, icon: 'sun' },
-                        { time: '4PM', temp: 24, icon: 'sun' }
-                    ],
+                    humidity: currentConditions.icon === 'rain' ? 82 : 65,
+                    uvIndex: currentHour >= 10 && currentHour <= 16 ? 8 : 1,
+                    hourly: hourlyData,
                     operationalInsights: [
                         {
                             department: 'Site Application',
-                            level: 'HIGH',
-                            message: 'Heavy rain expected within 2 hours',
-                            suggestion: 'Suspend outdoor high-altitude installations. Secure ground signage.'
+                            level: hourlyData.some(h => h.icon === 'rain') ? 'HIGH' : 'LOW',
+                            message: hourlyData.some(h => h.icon === 'rain')
+                                ? `Rain expected within ${hourlyData.findIndex(h => h.icon === 'rain')} hours`
+                                : 'Clear skies for installation',
+                            suggestion: hourlyData.some(h => h.icon === 'rain')
+                                ? 'Suspend outdoor high-altitude installations. Secure ground signage.'
+                                : 'Proceed with scheduled outdoor installations as planned.'
                         },
                         {
                             department: 'Logistics',
-                            level: 'MEDIUM',
-                            message: 'Wet road conditions affecting dispatch',
-                            suggestion: 'Factor in 30+ minute delays for all urban deliveries today.'
+                            level: hourlyData.some(h => h.icon === 'rain') ? 'MEDIUM' : 'LOW',
+                            message: 'Weather affecting urban mobility',
+                            suggestion: hourlyData.some(h => h.icon === 'rain')
+                                ? 'Factor in 30+ minute delays for all urban deliveries today.'
+                                : 'Standard delivery windows remain in effect.'
                         },
                         {
                             department: 'Production',
                             level: 'LOW',
-                            message: 'Ambient humidity at 78%',
+                            message: `Ambient humidity at ${currentConditions.icon === 'rain' ? 82 : 65}%`,
                             suggestion: 'Monitor ink drying times on wide-format vinyl printing.'
                         },
                         {
                             department: 'Studio',
                             level: 'LOW',
-                            message: 'Overcast skies affecting natural studio lighting',
+                            message: currentConditions.icon === 'sun' ? 'Strong natural side-lighting' : 'Overcast skies affecting natural lighting',
                             suggestion: 'Rely on calibrated monitors for accurate color proofing.'
                         }
                     ]
                 });
 
-                setTraffic({
-                    status: 'Moderate',
-                    currentTravelTime: 28,
-                    normalTravelTime: 16,
-                    route: 'Mombasa Road',
-                    incidents: ['Roadworks near Bellevue'],
-                    delayReason: 'Minor congestion detected.',
-                    operationalInsights: [
-                        {
-                            department: 'Logistics',
-                            level: 'HIGH',
-                            message: 'Roadworks causing localized gridlock',
-                            suggestion: 'Reroute all active dispatch units through Southern Bypass immediately.'
-                        },
-                        {
-                            department: 'Site Application',
-                            level: 'MEDIUM',
-                            message: 'Traffic compounding installation delays',
-                            suggestion: 'Notify client of revised ETA. Team currently 30 mins behind schedule.'
-                        }
-                    ]
-                });
+                // Helper to generate dynamic traffic data
+                const generateDynamicTraffic = () => {
+                    const baseTravelTime = 16;
+                    let delay = 0;
+                    let status: 'Clear' | 'Moderate' | 'Heavy' = 'Clear';
+                    const incidents: string[] = [];
+                    const impactAreas: { center: [number, number]; color: string; label: string }[] = [];
+
+                    // Travel time & status based on hour (Rush hour peaks)
+                    if ((currentHour >= 7 && currentHour <= 9) || (currentHour >= 16 && currentHour <= 19)) {
+                        delay = 15 + Math.floor(Math.random() * 10);
+                        status = 'Heavy';
+                        incidents.push('Peak hour congestion');
+                        impactAreas.push({
+                            center: [coords[0] + 0.005, coords[1] + 0.005],
+                            color: "#ef4444",
+                            label: "Heavy Congestion Area"
+                        });
+                    } else if (currentHour >= 10 && currentHour <= 15) {
+                        delay = 5 + Math.floor(Math.random() * 5);
+                        status = 'Moderate';
+                        impactAreas.push({
+                            center: [coords[0] + 0.005, coords[1] + 0.005],
+                            color: "#f59e0b",
+                            label: "Moderate Flow"
+                        });
+                    }
+
+                    // Simulated Roadworks (Active 8AM - 6PM)
+                    if (currentHour >= 8 && currentHour <= 18) {
+                        incidents.push('Roadworks near Bellevue');
+                        impactAreas.push({
+                            center: [-1.314, 36.837],
+                            color: "#f59e0b",
+                            label: "Roadworks at Bellevue"
+                        });
+                    }
+
+                    // Simulated Flood (Active during Storm/Rain hours)
+                    if (currentConditions.icon === 'rain' || currentConditions.icon === 'storm') {
+                        incidents.push('Flash flood warning at Valley Arch');
+                        impactAreas.push({
+                            center: [coords[0] - 0.01, coords[1] - 0.005],
+                            color: "#3b82f6",
+                            label: "Flash Flood Warning Zone"
+                        });
+                    }
+
+                    return {
+                        status,
+                        currentTravelTime: baseTravelTime + delay,
+                        normalTravelTime: baseTravelTime,
+                        route: 'Mombasa Road',
+                        incidents,
+                        impactAreas,
+                        delayReason: delay > 10 ? 'Significant congestion detected.' : (delay > 0 ? 'Minor congestion detected.' : 'Traffic is flowing smoothly.'),
+                        operationalInsights: [
+                            {
+                                department: 'Logistics',
+                                level: status === 'Heavy' ? 'HIGH' : (status === 'Moderate' ? 'MEDIUM' : 'LOW') as 'LOW' | 'MEDIUM' | 'HIGH',
+                                message: incidents.length > 0 ? incidents[0] : 'Traffic is currently clear',
+                                suggestion: status === 'Heavy'
+                                    ? 'Reroute all active dispatch units through Southern Bypass immediately.'
+                                    : (status === 'Moderate' ? 'Expect minor delays. Standard routes remain active.' : 'Standard delivery windows remain in effect.')
+                            },
+                            {
+                                department: 'Site Application',
+                                level: (status === 'Heavy' ? 'MEDIUM' : 'LOW') as 'LOW' | 'MEDIUM' | 'HIGH',
+                                message: `Traffic ${status === 'Heavy' ? 'compounding' : 'not affecting'} installation delays`,
+                                suggestion: status === 'Heavy'
+                                    ? 'Notify client of revised ETA. Team currently 30 mins behind schedule.'
+                                    : 'Schedule remains unaffected by traffic flow.'
+                            }
+                        ]
+                    };
+                };
+
+                setTraffic(generateDynamicTraffic());
                 setLoading(false);
             }, 800);
         };
@@ -156,11 +252,18 @@ export const useEnvironmentalData = () => {
         fetchLocationAndData();
 
         // Specific intervals mentioned: Weather (5m), Traffic (2m)
-        const weatherInterval = setInterval(() => console.log('Fetching live weather...'), 5 * 60 * 1000);
+        const weatherInterval = setInterval(() => {
+            console.log('Refreshing weather data...');
+            fetchMockData();
+        }, 5 * 60 * 1000);
         const trafficInterval = setInterval(() => console.log('Fetching live traffic...'), 2 * 60 * 1000);
 
         return () => { clearInterval(weatherInterval); clearInterval(trafficInterval); };
     }, []);
+
+    const refreshTraffic = () => {
+        // This can be called to manually refresh traffic data
+    };
 
     return { weather, traffic, loading, locationPermission, coords };
 };
@@ -168,7 +271,7 @@ export const useEnvironmentalData = () => {
 
 // --- Helper Components ---
 
-const WeatherLottie = ({ condition, className = "" }: { condition: string, className?: string }) => {
+export const WeatherLottie = ({ condition, className = "" }: { condition: string, className?: string }) => {
     let src = "/lottie/sunny.lottie";
     switch (condition?.toLowerCase()) {
         case 'rain':
@@ -238,7 +341,7 @@ const ChangeView = ({ center }: { center: [number, number] }) => {
     return null;
 };
 
-const TrafficMap = ({ coords, isDarkMode, status }: { coords: [number, number], isDarkMode: boolean, status: string }) => {
+const TrafficMap = ({ coords, isDarkMode, status, impactAreas }: { coords: [number, number], isDarkMode: boolean, status: string, impactAreas: { center: [number, number]; color: string; label: string }[] }) => {
     return (
         <div className={`relative w-full h-64 rounded-[24px] mb-6 border overflow-hidden ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>
             <MapContainer
@@ -264,28 +367,15 @@ const TrafficMap = ({ coords, isDarkMode, status }: { coords: [number, number], 
                     </Popup>
                 </Marker>
 
-                {/* Impact Areas: Traffic (Red), Floods (Blue), Roadworks (Yellow) */}
-
-                {/* Traffic Congestion Area */}
-                <PulseCircle
-                    center={[coords[0] + 0.005, coords[1] + 0.005]}
-                    color="#ef4444"
-                    label="Heavy Congestion Area"
-                />
-
-                {/* Roadworks near Bellevue (Offset from Nairobi center) */}
-                <PulseCircle
-                    center={[-1.314, 36.837]}
-                    color="#f59e0b"
-                    label="Roadworks at Bellevue"
-                />
-
-                {/* Weather Flood Risk Area (Mock) */}
-                <PulseCircle
-                    center={[coords[0] - 0.01, coords[1] - 0.005]}
-                    color="#3b82f6"
-                    label="Flash Flood Warning Zone"
-                />
+                {/* Dynamic Impact Areas Driven by Data */}
+                {impactAreas.map((area, idx) => (
+                    <PulseCircle
+                        key={`${area.label}-${idx}`}
+                        center={area.center}
+                        color={area.color}
+                        label={area.label}
+                    />
+                ))}
             </MapContainer>
 
             {/* Status Overlay */}
@@ -606,7 +696,7 @@ export const TrafficModal = ({ traffic, coords, isDarkMode, onClose }: { traffic
                 </div>
 
                 <div className="p-6">
-                    <TrafficMap coords={coords} isDarkMode={isDarkMode} status={traffic.status} />
+                    <TrafficMap coords={coords} isDarkMode={isDarkMode} status={traffic.status} impactAreas={traffic.impactAreas} />
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#1a1c1d] border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
