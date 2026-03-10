@@ -773,33 +773,112 @@ export default function App() {
 
   // AbortController for stopping in-flight AI requests
   const abortControllerRef = React.useRef<AbortController | null>(null);
+  const streamReaderRef = React.useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const [attachedFile, setAttachedFile] = useState<{ name: string; type: string; data: string } | null>(null);
+  const [streamingMessage, setStreamingMessage] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (event) => {
       const base64 = event.target?.result as string;
-      setAttachedFile({
-        name: file.name,
-        type: file.type,
-        data: base64.split(',')[1]
-      });
+      setAttachedFile({ name: file.name, type: file.type, data: base64.split(',')[1] });
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleStopGeneration = () => {
+    // Cancel any in-flight SSE stream
+    if (streamReaderRef.current) {
+      streamReaderRef.current.cancel();
+      streamReaderRef.current = null;
+    }
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    setMessages(prev => [...prev, { role: 'assistant', content: '⬛ Response stopped.' }]);
+    // Commit whatever partial text we have, or a stopped message
+    setMessages(prev => {
+      const partial = streamingMessage;
+      return [...prev, { role: 'assistant', content: partial ? `${partial}\n\n⬛ *Response stopped.*` : '⬛ Response stopped.' }];
+    });
+    setStreamingMessage('');
     setIsLoading(false);
+  };
+
+  /**
+   * Read an SSE stream from the /api/chat response.
+   * Calls onToken for each token chunk, onDone when stream ends.
+   */
+  const readSSEStream = async (
+    response: Response,
+    onToken: (token: string) => void,
+    onDone: (didMutate: boolean) => void,
+    signal: AbortSignal
+  ) => {
+    if (!response.body) throw new Error('No response body');
+    const reader = response.body.getReader();
+    streamReaderRef.current = reader;
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        if (signal.aborted) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse complete SSE lines from the buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep the incomplete last line in buffer
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const json = JSON.parse(line.slice(6));
+            if (json.token && !json.done) {
+              onToken(json.token);
+            }
+            if (json.done) {
+              onDone(json.didMutate || false);
+              return;
+            }
+          } catch { /* malformed JSON, skip */ }
+        }
+      }
+    } finally {
+      streamReaderRef.current = null;
+      reader.releaseLock();
+    }
+  };
+
+  /**
+   * Upload a file to /api/upload-file (server-side hash cache).
+   * On cache hit: server already has the bytes, no re-transmission needed.
+   * On cache miss: bytes are stored on the server and indexed by hash.
+   * Returns { fileHash, mimeType } on success, null on failure.
+   */
+  const uploadFileIfNeeded = async (
+    file: { name: string; type: string; data: string },
+    token: string
+  ): Promise<{ fileHash: string; mimeType: string } | null> => {
+    try {
+      const res = await fetch('/api/upload-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ fileData: file.data, mimeType: file.type, fileName: file.name })
+      });
+      if (!res.ok) throw new Error(`upload-file responded ${res.status}`);
+      const data = await res.json();
+      console.log(`[File Cache] ${data.cached ? 'HIT ✓' : 'MISS — stored'} "${file.name}" (hash: ${data.fileHash?.slice(0, 8)}…)`);
+      return { fileHash: data.fileHash, mimeType: data.mimeType };
+    } catch (err) {
+      console.warn('[File Cache] Upload failed, will fall back to inline base64:', err);
+      return null;
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -811,18 +890,23 @@ export default function App() {
     const currentFile = attachedFile;
 
     setInput('');
-    setAttachedFile(null); // Clear early for UI responsiveness
+    setAttachedFile(null);
     setMessages(prev => [...prev, { role: 'user', content: userMessage || (currentFile ? `Attached: ${currentFile.name}` : '') }]);
     setIsLoading(true);
+    setStreamingMessage('');
 
-    // Create a fresh AbortController for this request
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
+    // ── Upload file to /api/upload-file (server-side hash cache) ──────────────
+    let cachedFileRef: { fileHash: string; mimeType: string } | null = null;
+    if (currentFile) {
+      const session = (await supabase.auth.getSession()).data.session;
+      cachedFileRef = await uploadFileIfNeeded(currentFile, session?.access_token || '');
+    }
+
     try {
       let didMutate = false;
-
-      // Route the message: 'agent' = task CRUD (always server), 'cloud' = analytics (if enabled), 'local' = Q&A
       const route = routeMessage(userMessage, !!workspaceSettings?.cloudAiEnabled, useLocalModel, hasAttachment);
       console.log(`[AI Router] "${userMessage.slice(0, 60)}" → ${route.toUpperCase()}`);
 
@@ -830,7 +914,6 @@ export default function App() {
 
       if (route === 'local') {
         try {
-          // Local model handles simple Q&A and read-only queries
           const { text: responseText, didMutate: localMutated } = await chatWithLocalModel(
             [...messages, { role: 'user', content: userMessage }],
             localModelUrl,
@@ -841,95 +924,104 @@ export default function App() {
           finalResponseText = responseText;
         } catch (localError) {
           console.error('[Local AI Fallback] Error:', localError);
-          // Fallback to cloud agent if local fails
           const session = (await supabase.auth.getSession()).data.session;
           const currentUserId = user?.id || session?.user?.id;
-
           try {
             const res = await fetch('/api/chat', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session?.access_token || ''}`
-              },
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token || ''}` },
               body: JSON.stringify({
                 message: userMessage || (hasAttachment ? `Analyze this file: ${currentFile?.name}` : ''),
                 history: messages.map(m => ({ role: m.role, content: m.content })),
-                userId: currentUserId,
-                userRole: userProfile?.global_role,
-                fileData: currentFile?.data,
-                mimeType: currentFile?.type
+                userId: currentUserId, userRole: userProfile?.global_role,
+                // Send hash ref if cached; else send full base64 (first upload)
+                ...(cachedFileRef
+                  ? { fileHash: cachedFileRef.fileHash, mimeType: cachedFileRef.mimeType }
+                  : { fileData: currentFile?.data, mimeType: currentFile?.type })
               }),
               signal: controller.signal
             });
+            if (!res.ok) { const e = await res.json(); throw new Error(e.details || e.error || 'Cloud API failed'); }
 
-            if (!res.ok) {
-              const errorData = await res.json();
-              throw new Error(errorData.details || errorData.error || 'Cloud API failed');
+            // Cloud fallback is also SSE
+            if (res.headers.get('Content-Type')?.includes('text/event-stream')) {
+              let accum = '⚠️ (Local Model unavailable, using Yukime Cloud)\n\n';
+              setStreamingMessage(accum);
+              await readSSEStream(res,
+                (token) => { accum += token; setStreamingMessage(accum); },
+                (dm) => { didMutate = dm; finalResponseText = accum; },
+                controller.signal
+              );
+            } else {
+              const data = await res.json();
+              finalResponseText = `⚠️ (Local Model unavailable, using Yukime Cloud)\n\n${data.text || ''}`;
+              didMutate = data.didMutate || false;
             }
-
-            const data = await res.json();
-            finalResponseText = `⚠️ (Local Model unavailable, using Yukime Cloud)\n\n${data.text || 'I processed your request, but returned no text.'}`;
-            didMutate = data.didMutate || false;
           } catch (cloudError: any) {
-            console.error('[Cloud Fallback Failed]:', cloudError);
             finalResponseText = `❌ Error: Both Local and Cloud AI are currently unavailable.\n\nDetail: ${cloudError.message}`;
           }
         }
 
         if (!controller.signal.aborted) {
+          if (!finalResponseText && streamingMessage) finalResponseText = streamingMessage;
           setMessages(prev => [...prev, { role: 'assistant', content: finalResponseText }]);
+          setStreamingMessage('');
         }
+
       } else if (route === 'agent' || route === 'cloud') {
-        // Both 'agent' and 'cloud' use the server-side Gemini endpoint (/api/chat)
-        // 'agent' = task CRUD mutations (always on, ignores toggle)
-        // 'cloud' = deep analysis/reports (only when cloud enabled — already gated by router)
         const session = (await supabase.auth.getSession()).data.session;
         const res = await fetch('/api/chat', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session?.access_token || ''}`
-          },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token || ''}` },
           body: JSON.stringify({
             message: userMessage || (hasAttachment ? `Analyze this file: ${currentFile?.name}` : ''),
             history: messages.map(m => ({ role: m.role, content: m.content })),
-            userId: user?.id,
-            userRole: userProfile?.global_role,
-            fileData: currentFile?.data,
-            mimeType: currentFile?.type
+            userId: user?.id, userRole: userProfile?.global_role,
+            // Send hash ref if cached; else send full base64 (first upload)
+            ...(cachedFileRef
+              ? { fileHash: cachedFileRef.fileHash, mimeType: cachedFileRef.mimeType }
+              : { fileData: currentFile?.data, mimeType: currentFile?.type })
           }),
           signal: controller.signal
         });
 
         if (!res.ok) {
-          // Server is offline — if it was a task mutation, tell the user clearly
-          if (route === 'agent') {
-            if (!controller.signal.aborted) {
-              setMessages(prev => [...prev, { role: 'assistant', content: "⚠️ The task agent server is currently offline. Please ensure the dev API server (`npx tsx scripts/dev-api.ts`) is running, then try again." }]);
-            }
-          } else {
-            if (!controller.signal.aborted) {
-              setMessages(prev => [...prev, { role: 'assistant', content: "⚠️ Cloud AI is temporarily unavailable. Please try again shortly." }]);
-            }
-          }
+          const errMsg = route === 'agent'
+            ? '⚠️ The task agent server is currently offline. Please ensure the dev API server is running, then try again.'
+            : '⚠️ Cloud AI is temporarily unavailable. Please try again shortly.';
+          if (!controller.signal.aborted) setMessages(prev => [...prev, { role: 'assistant', content: errMsg }]);
           return;
         }
 
-        const data = await res.json();
-        didMutate = data.didMutate || false;
-        if (!controller.signal.aborted) {
-          setMessages(prev => [...prev, { role: 'assistant', content: data.text || data.error || "Something went wrong." }]);
+        // Check if server responded with SSE stream or plain JSON
+        if (res.headers.get('Content-Type')?.includes('text/event-stream')) {
+          let accum = '';
+          await readSSEStream(res,
+            (token) => { accum += token; setStreamingMessage(accum); },
+            (dm) => { didMutate = dm; finalResponseText = accum; },
+            controller.signal
+          );
+          if (!controller.signal.aborted) {
+            setMessages(prev => [...prev, { role: 'assistant', content: finalResponseText || 'I processed your request.' }]);
+            setStreamingMessage('');
+          }
+        } else {
+          // Fallback for non-streaming response
+          const data = await res.json();
+          didMutate = data.didMutate || false;
+          if (!controller.signal.aborted) {
+            setMessages(prev => [...prev, { role: 'assistant', content: data.text || data.error || 'Something went wrong.' }]);
+          }
         }
       }
 
       if (controller.signal.aborted) return;
 
-      // Persist the conversation thread
+      // Persist chat session
       const latestMessages = useAppStore.getState().messages;
       await saveChatSession('main', latestMessages);
 
-      // Refresh task/project data in the UI if the AI performed a mutation
+      // Refresh data if AI mutated tasks/projects
       if (didMutate) {
         setIsRefreshing(true);
         await fetchData();
@@ -939,11 +1031,13 @@ export default function App() {
     } catch (error: any) {
       if (error?.name === 'AbortError') return;
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error processing your request.' }]);
+      setStreamingMessage('');
     } finally {
       abortControllerRef.current = null;
       setIsLoading(false);
     }
   };
+
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -2038,12 +2132,22 @@ export default function App() {
                 ))}
                 {isLoading && (
                   <div className="flex justify-start">
-                    <div className={`${isDarkMode ? 'bg-[#1A1A1C] border-gray-800' : 'bg-white border-gray-100'} border p-4 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-2`}>
-                      <Loader2 size={16} className="animate-spin text-indigo-600" />
-                      <span className="text-xs text-gray-400 font-medium">Thinking...</span>
+                    <div className={`${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-gray-300' : 'bg-white border-gray-100 text-gray-700'} border p-4 rounded-2xl rounded-tl-none shadow-sm max-w-[95%]`}>
+                      {streamingMessage ? (
+                        <div className={`prose prose-sm max-w-none ${isDarkMode ? 'prose-invert' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingMessage}</ReactMarkdown>
+                          <span className="inline-block w-1.5 h-4 bg-indigo-500 ml-0.5 align-middle animate-pulse rounded-sm" />
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Loader2 size={16} className="animate-spin text-indigo-600" />
+                          <span className="text-xs text-gray-400 font-medium">Thinking...</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
+
                 <div ref={chatEndRef} />
               </div>
 

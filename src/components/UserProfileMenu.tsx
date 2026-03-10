@@ -28,7 +28,13 @@ const EditProfilePanel: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     const [name, setName] = useState(userProfile.name);
     const [role, setRole] = useState('Productivity Pro');
     const [saved, setSaved] = useState(false);
+    const [location, setLocation] = useState(userProfile.location || '');
+    const [coords, setCoords] = useState<[number, number] | undefined>(userProfile.coords || undefined);
+    const [suggestions, setSuggestions] = useState<any[]>([]);
+    const [showSuggestions, setShowSuggestions] = useState(false);
+    const [isSearching, setIsSearching] = useState(false);
     const fileRef = useRef<HTMLInputElement>(null);
+    const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     const handleFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -36,8 +42,40 @@ const EditProfilePanel: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         setUrlInput(URL.createObjectURL(file));
     };
 
+    const handleLocationSearch = async (query: string) => {
+        setLocation(query);
+        if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+
+        if (!query.trim() || query.length < 3) {
+            setSuggestions([]);
+            setShowSuggestions(false);
+            return;
+        }
+
+        searchTimeoutRef.current = setTimeout(async () => {
+            setIsSearching(true);
+            try {
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`);
+                const data = await res.json();
+                setSuggestions(data);
+                setShowSuggestions(true);
+            } catch (error) {
+                console.error('Location search failed:', error);
+            } finally {
+                setIsSearching(false);
+            }
+        }, 500);
+    };
+
+    const selectSuggestion = (s: any) => {
+        setLocation(s.display_name);
+        setCoords([parseFloat(s.lat), parseFloat(s.lon)]);
+        setSuggestions([]);
+        setShowSuggestions(false);
+    };
+
     const handleSave = () => {
-        setUserProfile({ name, avatar_url: urlInput });
+        setUserProfile({ name, avatar_url: urlInput, location, coords });
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
     };
@@ -91,16 +129,63 @@ const EditProfilePanel: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             <div className={`border-t ${dk ? 'border-gray-800' : 'border-gray-100'}`} />
 
             {/* Name & Role */}
-            <div>
-                <label className={labelCls}>Display Name</label>
-                <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
-                    className={inputCls(dk)} maxLength={50} />
-                <p className="text-[10px] text-gray-500 mt-1">{name.length}/50</p>
+            <div className="grid grid-cols-2 gap-4">
+                <div>
+                    <label className={labelCls}>Display Name</label>
+                    <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
+                        className={inputCls(dk)} maxLength={50} />
+                </div>
+                <div>
+                    <label className={labelCls}>Title / Role</label>
+                    <input value={role} onChange={e => setRole(e.target.value)} placeholder="e.g. Designer"
+                        className={inputCls(dk)} />
+                </div>
             </div>
-            <div>
-                <label className={labelCls}>Title / Role</label>
-                <input value={role} onChange={e => setRole(e.target.value)} placeholder="e.g. Product Manager"
-                    className={inputCls(dk)} />
+
+            {/* Location */}
+            <div className="relative">
+                <label className={labelCls}>Work Location (Overrides Browser)</label>
+                <div className="relative">
+                    <input
+                        value={location}
+                        onChange={e => handleLocationSearch(e.target.value)}
+                        placeholder="e.g. Nairobi, Kenya"
+                        className={inputCls(dk) + ' pr-10'}
+                    />
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                        {isSearching ? (
+                            <div className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                        ) : (
+                            <Globe size={14} className="text-gray-500" />
+                        )}
+                    </div>
+                </div>
+
+                <AnimatePresence>
+                    {showSuggestions && suggestions.length > 0 && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -5 }}
+                            className={`absolute left-0 right-0 top-full mt-1 rounded-xl border z-50 overflow-hidden shadow-xl ${dk ? 'bg-gray-900 border-gray-800 shadow-black/40' : 'bg-white border-gray-100 shadow-gray-200/40'}`}
+                        >
+                            {suggestions.map((s, i) => (
+                                <button
+                                    key={i}
+                                    onClick={() => selectSuggestion(s)}
+                                    className={`w-full px-4 py-2.5 text-left text-xs font-medium transition-colors border-b last:border-0 ${dk ? 'border-gray-800 hover:bg-gray-800 text-gray-300' : 'border-gray-50 hover:bg-gray-50 text-gray-700'}`}
+                                >
+                                    {s.display_name}
+                                </button>
+                            ))}
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+                {coords && !showSuggestions && (
+                    <p className="text-[9px] font-mono text-gray-500 mt-1 flex items-center gap-1">
+                        <Check size={10} className="text-emerald-500" /> Coords established: {coords[0].toFixed(4)}, {coords[1].toFixed(4)}
+                    </p>
+                )}
             </div>
 
             {/* Preview */}
@@ -110,7 +195,7 @@ const EditProfilePanel: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                 </div>
                 <div>
                     <p className={`text-sm font-bold ${dk ? 'text-white' : 'text-gray-900'}`}>{name || 'Your Name'}</p>
-                    <p className="text-[10px] text-gray-500">{role}</p>
+                    <p className="text-[10px] text-gray-500">{role} {location && `· ${location.split(',')[0]}`}</p>
                 </div>
             </div>
 

@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CloudRain, Wind, Thermometer, MapPin, Navigation, AlertTriangle, AlertCircle, RefreshCw, Navigation2, Sun, Cloud, CloudLightning, Activity, Droplets } from 'lucide-react';
+import { useAppStore } from '../store/useAppStore';
+import {
+    CloudRain, Wind, Thermometer, MapPin, Navigation, AlertTriangle, AlertCircle, RefreshCw, Navigation2, Sun, Cloud, CloudLightning, Activity, Droplets
+} from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, Circle } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -51,17 +54,28 @@ export interface TrafficData {
 
 // --- Mock Hooks & Services ---
 export const useEnvironmentalData = () => {
+    const { userProfile } = useAppStore();
     const [weather, setWeather] = useState<WeatherData | null>(null);
     const [traffic, setTraffic] = useState<TrafficData | null>(null);
     const [loading, setLoading] = useState(true);
-    const [coords, setCoords] = useState<[number, number]>([-1.286389, 36.817223]); // Default to Nairobi
-    const [locationPermission, setLocationPermission] = useState<PermissionState | 'prompt'>('prompt');
+    const [coords, setCoords] = useState<[number, number]>(userProfile.coords || [-1.286389, 36.817223]); // Default to Profile or Nairobi
+    const [locationPermission, setLocationPermission] = useState<PermissionState | 'prompt' | 'overridden'>(userProfile.coords ? 'overridden' : 'prompt');
 
     useEffect(() => {
         const fetchLocationAndData = async () => {
+            // Priority 1: User Profile Override
+            if (userProfile.coords) {
+                console.log("Using Profile Location Override:", userProfile.location);
+                setCoords(userProfile.coords);
+                setLocationPermission('overridden');
+                fetchMockData(userProfile.coords, userProfile.location || 'Your Location');
+                return;
+            }
+
+            // Priority 2: Browser Geolocation
             if (!navigator.geolocation) {
                 setLocationPermission('denied');
-                setLoading(false);
+                fetchMockData(coords, 'Nairobi');
                 return;
             }
 
@@ -70,19 +84,17 @@ export const useEnvironmentalData = () => {
                     const { latitude, longitude } = position.coords;
                     setCoords([latitude, longitude]);
                     setLocationPermission('granted');
-                    // In a real app, we would use position.coords.latitude/longitude 
-                    // to fetch weather for the actual location.
-                    fetchMockData();
+                    fetchMockData([latitude, longitude], 'Local Area');
                 },
                 (error) => {
                     console.error("Location error:", error);
                     setLocationPermission('denied');
-                    fetchMockData(); // Fallback to mock data (Nairobi) even if denied
+                    fetchMockData(coords, 'Nairobi'); // Fallback to current state
                 }
             );
         };
 
-        const fetchMockData = () => {
+        const fetchMockData = (targetCoords: [number, number], locationName: string) => {
             setLoading(true);
             setTimeout(() => {
                 const now = new Date();
@@ -129,7 +141,7 @@ export const useEnvironmentalData = () => {
                     condition: currentConditions.icon === 'rain' ? 'Rain' : (currentConditions.icon === 'sun' ? 'Sunny' : (currentConditions.icon === 'storm' ? 'Storm' : 'Cloudy')),
                     rainChance: currentConditions.icon === 'rain' ? 75 : (currentConditions.icon === 'cloud' ? 30 : 5),
                     windSpeed: 12 + Math.floor(Math.random() * 5),
-                    location: 'Nairobi',
+                    location: locationName.split(',')[0], // Use shorthand name
                     humidity: currentConditions.icon === 'rain' ? 82 : 65,
                     uvIndex: currentHour >= 10 && currentHour <= 16 ? 8 : 1,
                     hourly: hourlyData,
@@ -254,12 +266,12 @@ export const useEnvironmentalData = () => {
         // Specific intervals mentioned: Weather (5m), Traffic (2m)
         const weatherInterval = setInterval(() => {
             console.log('Refreshing weather data...');
-            fetchMockData();
+            fetchMockData(coords, weather?.location || 'Your Location');
         }, 5 * 60 * 1000);
         const trafficInterval = setInterval(() => console.log('Fetching live traffic...'), 2 * 60 * 1000);
 
         return () => { clearInterval(weatherInterval); clearInterval(trafficInterval); };
-    }, []);
+    }, [userProfile.coords, userProfile.location]);
 
     const refreshTraffic = () => {
         // This can be called to manually refresh traffic data

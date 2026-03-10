@@ -2,8 +2,11 @@ import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 import path from 'path';
 import { VertexAI } from '@google-cloud/vertexai';
+// Import server-side file cache from upload-file handler
+// (works because both run in the same Node.js process in dev + serverless)
+import { fileCache } from './upload-file';
 
-// Core Supabase Config (Singletons for config only)
+// Core Supabase Config
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
@@ -26,7 +29,6 @@ try {
     console.warn("Failed to load Vertex AI credentials:", e);
 }
 
-// Global Vertex instance (will be initialized per request to handle credentials reliably)
 function getVertexAI() {
     if (!vertexConfig) throw new Error("Vertex AI credentials not configured");
     return new VertexAI({
@@ -40,7 +42,6 @@ function getVertexAI() {
         }
     });
 }
-
 
 const SYSTEM_PROMPT = `You are Yukime, the Work Intelligence Agent for TICKEL.
 TICKEL has been developed by the team at Rickel Industries. Rickel Industries is a design-first, tech-centric creative and digital solutions studio that blends artistry with functional systems and web technology to help brands express themselves and thrive online. Our expertise spans strategic visual branding, motion and graphic design, product interfaces, and end-to-end digital experiences that go beyond surface aesthetics to solve real business needs.
@@ -257,10 +258,10 @@ export default async function handler(req: any, res: any) {
     }
 
     try {
-        const { message, history, systemPrompt: customSystemPrompt, userId: rawUserId, userRole, fileData, mimeType } = req.body;
+        const { message, history, systemPrompt: customSystemPrompt, userId: rawUserId, userRole, fileData, fileUri, fileHash, mimeType } = req.body;
         const userId = rawUserId || 'anonymous';
-        fileLog(`[API] Start Request - userId: ${userId}, message: "${message?.slice(0, 50)}..."`);
-        console.log(`[API] Received request from userId: ${userId}, message: "${message?.slice(0, 50)}..."`);
+        fileLog(`[API] Start - userId: ${userId}, msg: "${message?.slice(0, 50)}"`);
+        console.log(`[API] userId: ${userId}, msg: "${message?.slice(0, 50)}"`);
         if (!message) return res.status(400).json({ error: "Message is required" });
 
         const today = new Date().toISOString().split('T')[0];
@@ -271,17 +272,14 @@ export default async function handler(req: any, res: any) {
             return res.status(500).json({ error: "Vertex AI credentials (.env.vertex.json) not found on server" });
         }
 
-        // Use role-specific system prompt if provided (e.g. from Support AI), otherwise use default Yukime prompt
         const activeSystemPrompt = (customSystemPrompt || SYSTEM_PROMPT) + "\n\n" + dynamicPrompt;
 
         // Determine model from workspace settings
         const { data: settings } = await supabase.from('workspace_settings').select('cloud_ai_model').limit(1).single();
         const targetModel = settings?.cloud_ai_model || 'gemini-2.5-pro';
+        fileLog(`[API] Model: ${targetModel}`);
 
-        fileLog(`[API] Using model: ${targetModel}`);
-        console.log(`[API] Using model: ${targetModel}`);
-
-        // Build conversation contents with full history for multi-turn context
+        // Build conversation contents
         const contents: any[] = [];
         if (history && Array.isArray(history)) {
             for (const msg of history) {
@@ -289,19 +287,29 @@ export default async function handler(req: any, res: any) {
                 else if (msg.role === 'assistant' || msg.role === 'model') contents.push({ role: 'model', parts: [{ text: msg.content }] });
             }
         }
-
         const userParts: any[] = [{ text: message }];
-        if (fileData && mimeType) {
-            userParts.push({
-                inlineData: {
-                    data: fileData,
-                    mimeType: mimeType
-                }
-            });
+        if (fileUri && mimeType) {
+            // Vertex fileUri (gs:// or Files API URI)
+            userParts.push({ fileData: { fileUri, mimeType } });
+            fileLog(`[API] Using fileUri: ${fileUri}`);
+        } else if (fileHash) {
+            // Look up cached bytes by SHA-256 hash (uploaded via /api/upload-file)
+            const cached = fileCache.get(fileHash);
+            if (cached) {
+                userParts.push({ inlineData: { data: cached.data, mimeType: cached.mimeType } });
+                fileLog(`[API] CACHE HIT for fileHash ${fileHash.slice(0, 8)}… (${(cached.data.length * 0.75 / 1024).toFixed(0)} KB)`);
+                console.log(`[API] Using cached file "${cached.fileName}" via hash`);
+            } else {
+                fileLog(`[API] CACHE MISS for fileHash ${fileHash.slice(0, 8)}… — file not found`);
+                console.warn(`[API] fileHash ${fileHash.slice(0, 8)}… not in cache — file may have been lost on server restart`);
+            }
+        } else if (fileData && mimeType) {
+            // Legacy fallback: inline base64 (used on first upload or if cache is cold)
+            userParts.push({ inlineData: { data: fileData, mimeType } });
+            fileLog(`[API] Using inline inlineData (${(fileData.length * 0.75 / 1024).toFixed(0)} KB)`);
         }
         contents.push({ role: 'user', parts: userParts });
 
-        // Multi-turn tool execution loop
         const vertexAI = getVertexAI();
         const model = vertexAI.getGenerativeModel({
             model: targetModel,
@@ -309,6 +317,133 @@ export default async function handler(req: any, res: any) {
             tools: [{ functionDeclarations: toolDeclarations as any }]
         });
 
+        // ── Tool helpers ────────────────────────────────────────────────────────
+        const sanitize = (obj: any) => {
+            const r = { ...obj };
+            for (const k in r) { if (r[k] === '') r[k] = null; }
+            return r;
+        };
+
+        const execTool = async (name: string, args: any): Promise<any> => {
+            switch (name) {
+                case 'create_task': {
+                    const a = sanitize(args);
+                    if (a.start_date && a.start_time) a.start_date = `${a.start_date.split('T')[0]}T${a.start_time}:00`;
+                    else if (a.start_time) a.start_date = `${today}T${a.start_time}:00`;
+                    if (a.due_date && a.due_time) a.due_date = `${a.due_date.split('T')[0]}T${a.due_time}:00`;
+                    else if (a.due_time) a.due_date = `${today}T${a.due_time}:00`;
+                    delete a.start_time; delete a.due_time;
+                    const td = { ...a, user_id: userId };
+                    if (td.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(td.project_id)) {
+                        const { data: p } = await supabase.from('projects').select('id').ilike('name', td.project_id.trim()).is('deleted_at', null).limit(1).single();
+                        if (p) td.project_id = p.id;
+                        else {
+                            const { data: rp } = await supabase.from('projects').select('id').is('deleted_at', null).order('created_at', { ascending: false }).limit(1).single();
+                            if (rp) td.project_id = rp.id;
+                        }
+                    }
+                    const { error, data } = await supabase.from('tasks').insert([td]).select();
+                    const r = error ? { error: error.message } : { success: true, task: data[0] };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'create_task', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'update_task': {
+                    const u = sanitize(args); const { task_id } = u; delete u.task_id;
+                    if (u.start_date && u.start_time) u.start_date = `${u.start_date.split('T')[0]}T${u.start_time}:00`;
+                    if (u.due_date && u.due_time) u.due_date = `${u.due_date.split('T')[0]}T${u.due_time}:00`;
+                    delete u.start_time; delete u.due_time;
+                    if (u.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(u.project_id)) {
+                        const { data: p } = await supabase.from('projects').select('id').ilike('name', u.project_id.trim()).is('deleted_at', null).limit(1).single();
+                        if (p) u.project_id = p.id; else delete u.project_id;
+                    }
+                    const { error } = await supabase.from('tasks').update(u).eq('id', task_id);
+                    const r = error ? { error: error.message } : { success: true };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'update_task', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'delete_task': {
+                    if (!args.confirmed) return { success: false, error: "Confirmation required." };
+                    const { error } = await supabase.from('tasks').update({ deleted_at: new Date().toISOString() }).eq('id', args.task_id);
+                    const r = error ? { error: error.message } : { success: true };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'delete_task', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'create_project': {
+                    const pd = { ...sanitize(args), user_id: userId };
+                    const { error, data } = await supabase.from('projects').insert([pd]).select();
+                    const r = error ? { error: error.message } : { success: true, project: data[0] };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'create_project', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'update_project': {
+                    const { project_id, ...updates } = sanitize(args);
+                    const { error } = await supabase.from('projects').update(updates).eq('id', project_id);
+                    const r = error ? { error: error.message } : { success: true };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'update_project', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'delete_project': {
+                    if (!args.confirmed) return { success: false, error: "Confirmation required." };
+                    const { data: tasks } = await supabase.from('tasks').select('id').eq('project_id', args.project_id).is('deleted_at', null);
+                    const { error } = await supabase.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', args.project_id);
+                    await supabase.from('tasks').update({ deleted_at: new Date().toISOString() }).eq('project_id', args.project_id).is('deleted_at', null);
+                    const r = error ? { error: "Failed to delete project" } : { success: true, deleted_task_ids: tasks?.map((t: any) => t.id) };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'delete_project', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'log_time': {
+                    const entry = { task_id: args.task_id, hours: args.hours, date: args.date || today, user_id: userId };
+                    const { error } = await supabase.from('time_logs').insert([entry]);
+                    const r = error ? { error: error.message } : { success: true };
+                    await supabase.from('ai_action_logs').insert([{ action_type: 'log_time', details: args, outcome: r, user_id: userId }]);
+                    return r;
+                }
+                case 'get_tasks': {
+                    const { data, error } = await supabase.from('tasks').select('*, projects(name)').eq('user_id', userId).is('deleted_at', null).order('created_at', { ascending: false });
+                    return error ? { error: error.message } : { tasks: data };
+                }
+                case 'get_projects': {
+                    const { data, error } = await supabase.from('projects').select('*').eq('user_id', userId).is('deleted_at', null).order('created_at', { ascending: false });
+                    return error ? { error: error.message } : { projects: data };
+                }
+                case 'get_team_members': {
+                    const { data, error } = await supabase.from('profiles').select('id, full_name, global_role, email').order('full_name');
+                    return error ? { error: error.message } : { team_members: data };
+                }
+                case 'get_metrics': {
+                    const { data, error } = await supabase.from('time_logs').select('hours');
+                    const totalHours = data?.reduce((s: number, l: any) => s + (l.hours || 0), 0) || 0;
+                    return error ? { error: error.message } : { total_hours_logged: totalHours };
+                }
+                case 'undo_last_action': {
+                    const { data: lastLog, error } = await supabase.from('ai_action_logs').select('*').order('timestamp', { ascending: false }).limit(1).single();
+                    if (error || !lastLog) return { success: false, error: "No actions found to undo." };
+                    const { action_type, details, outcome } = lastLog as any;
+                    try {
+                        if (action_type === 'create_task') await supabase.from('tasks').delete().eq('id', outcome.task.id);
+                        else if (action_type === 'delete_task') await supabase.from('tasks').update({ deleted_at: null }).eq('id', details.task_id);
+                        else if (action_type === 'create_project') await supabase.from('projects').delete().eq('id', outcome.project.id);
+                        else if (action_type === 'delete_project') {
+                            await supabase.from('projects').update({ deleted_at: null }).eq('id', details.project_id);
+                            if (outcome.deleted_task_ids?.length > 0) await supabase.from('tasks').update({ deleted_at: null }).in('id', outcome.deleted_task_ids);
+                        } else if (action_type === 'log_time') {
+                            await supabase.from('time_logs').delete().eq('task_id', details.task_id).eq('hours', details.hours).match({ date: details.date });
+                        }
+                        await supabase.from('ai_action_logs').delete().eq('id', lastLog.id);
+                        return { success: true, message: `Undid the last ${action_type} action.` };
+                    } catch (e: any) {
+                        return { success: false, error: `Undo failed: ${e.message}` };
+                    }
+                }
+                default:
+                    return { error: "Unknown tool" };
+            }
+        };
+
+        // ── Multi-turn agentic loop ─────────────────────────────────────────────
+        // TOOL TURNS: blocking generateContent (function calls can't be streamed).
+        // FINAL TEXT TURN: generateContentStream → SSE to client for instant feel.
+        const MUTATION_TOOLS = new Set(['create_task', 'update_task', 'delete_task', 'create_project', 'update_project', 'delete_project', 'log_time']);
         let currentContents = [...contents];
         let loopCount = 0;
         const MAX_LOOPS = 5;
@@ -316,198 +451,77 @@ export default async function handler(req: any, res: any) {
 
         while (loopCount < MAX_LOOPS) {
             loopCount++;
-            fileLog(`[API] Gemini Turn ${loopCount}`);
-            console.log(`[API] Gemini Turn ${loopCount}...`);
+            fileLog(`[API] Turn ${loopCount}`);
 
             let result;
             try {
                 result = await model.generateContent({ contents: currentContents });
             } catch (gemError: any) {
-                fileLog(`[GEMINI SDK ERROR] ${gemError.message}`);
-                console.error(`[GEMINI SDK ERROR]:`, gemError);
+                fileLog(`[GEMINI ERROR] ${gemError.message}`);
                 throw gemError;
             }
-            const response = await result.response;
-            const candidate = response.candidates?.[0];
-            const part = candidate?.content?.parts?.[0];
 
+            const response = await result.response;
+            const part = response.candidates?.[0]?.content?.parts?.[0];
+
+            // ── Function call → execute and continue loop ──────────────────────
             if (part?.functionCall) {
                 const { name, args } = part.functionCall;
-                console.log(`[AI TOOL CALL] Turn ${loopCount}: ${name}`);
-
-                if (['create_task', 'update_task', 'delete_task', 'create_project', 'update_project', 'delete_project', 'log_time'].includes(name)) {
-                    didMutateFromTools = true;
-                }
-
-                const sanitize = (obj: any) => {
-                    const res = { ...obj };
-                    for (const key in res) {
-                        if (res[key] === '') res[key] = null;
-                    }
-                    return res;
-                };
-
-                const tools: Record<string, (args: any) => Promise<any>> = {
-                    create_task: async (a) => {
-                        const args = sanitize(a);
-                        // Merge date and time if both provided
-                        if (args.start_date && args.start_time) {
-                            args.start_date = `${args.start_date.split('T')[0]}T${args.start_time}:00`;
-                        } else if (args.start_time) {
-                            args.start_date = `${new Date().toISOString().split('T')[0]}T${args.start_time}:00`;
-                        }
-
-                        if (args.due_date && args.due_time) {
-                            args.due_date = `${args.due_date.split('T')[0]}T${args.due_time}:00`;
-                        } else if (args.due_time) {
-                            args.due_date = `${new Date().toISOString().split('T')[0]}T${args.due_time}:00`;
-                        }
-
-                        // Remove helper fields before DB insert
-                        delete args.start_time;
-                        delete args.due_time;
-
-                        const taskData = { ...args, user_id: userId };
-                        if (taskData.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskData.project_id)) {
-                            const { data: proj } = await supabase.from('projects').select('id').ilike('name', taskData.project_id.trim()).is('deleted_at', null).limit(1).single();
-                            if (proj) taskData.project_id = proj.id;
-                            else {
-                                const { data: recentProj } = await supabase.from('projects').select('id').is('deleted_at', null).order('created_at', { ascending: false }).limit(1).single();
-                                if (recentProj) taskData.project_id = recentProj.id;
-                            }
-                        }
-                        const { error, data } = await supabase.from('tasks').insert([taskData]).select();
-                        const r = error ? { error: error.message, hint: "Check project_id." } : { success: true, task: data[0] };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'create_task', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    update_task: async (a) => {
-                        const updates = sanitize(a);
-                        const { task_id } = updates;
-                        delete (updates as any).task_id;
-
-                        // Merge date and time if provided
-                        if (updates.start_date && updates.start_time) {
-                            updates.start_date = `${updates.start_date.split('T')[0]}T${updates.start_time}:00`;
-                        }
-                        if (updates.due_date && updates.due_time) {
-                            updates.due_date = `${updates.due_date.split('T')[0]}T${updates.due_time}:00`;
-                        }
-
-                        // Remove helper fields
-                        delete updates.start_time;
-                        delete updates.due_time;
-
-                        if (updates.project_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(updates.project_id)) {
-                            const { data: proj } = await supabase.from('projects').select('id').ilike('name', updates.project_id.trim()).is('deleted_at', null).limit(1).single();
-                            if (proj) updates.project_id = proj.id;
-                            else delete updates.project_id;
-                        }
-                        const { error } = await supabase.from('tasks').update(updates).eq('id', task_id);
-                        const r = error ? { error: error.message, hint: "Verify task_id." } : { success: true };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'update_task', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    delete_task: async (a) => {
-                        if (!a.confirmed) return { success: false, error: "Confirmation required." };
-                        const { error } = await supabase.from('tasks').update({ deleted_at: new Date().toISOString() }).eq('id', a.task_id);
-                        const r = error ? { error: error.message } : { success: true };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'delete_task', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    create_project: async (a) => {
-                        const projectData = { ...sanitize(a), user_id: userId };
-                        const { error, data } = await supabase.from('projects').insert([projectData]).select();
-                        const r = error ? { error: error.message } : { success: true, project: data[0] };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'create_project', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    update_project: async (a) => {
-                        const { project_id, ...updates } = sanitize(a);
-                        const { error } = await supabase.from('projects').update(updates).eq('id', project_id);
-                        const r = error ? { error: error.message } : { success: true };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'update_project', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    delete_project: async (a) => {
-                        if (!a.confirmed) return { success: false, error: "Confirmation required." };
-                        const { data: tasks } = await supabase.from('tasks').select('id').eq('project_id', a.project_id).is('deleted_at', null);
-                        const { error: err1 } = await supabase.from('projects').update({ deleted_at: new Date().toISOString() }).eq('id', a.project_id);
-                        await supabase.from('tasks').update({ deleted_at: new Date().toISOString() }).eq('project_id', a.project_id).is('deleted_at', null);
-                        const r = err1 ? { error: "Failed to delete project" } : { success: true, deleted_task_ids: tasks?.map(t => t.id) };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'delete_project', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    log_time: async (a) => {
-                        const entry = { task_id: a.task_id, hours: a.hours, date: a.date || new Date().toISOString().split('T')[0], user_id: userId };
-                        const { error } = await supabase.from('time_logs').insert([entry]);
-                        const r = error ? { error: error.message } : { success: true };
-                        await supabase.from('ai_action_logs').insert([{ action_type: 'log_time', details: a, outcome: r, user_id: userId }]);
-                        return r;
-                    },
-                    get_tasks: async () => {
-                        const { data, error } = await supabase.from('tasks').select('*, projects(name)').eq('user_id', userId).is('deleted_at', null).order('created_at', { ascending: false });
-                        return error ? { error: error.message } : { tasks: data };
-                    },
-                    get_projects: async () => {
-                        const { data, error } = await supabase.from('projects').select('*').eq('user_id', userId).is('deleted_at', null).order('created_at', { ascending: false });
-                        return error ? { error: error.message } : { projects: data };
-                    },
-                    get_team_members: async () => {
-                        const { data, error } = await supabase.from('profiles').select('id, full_name, global_role, email').order('full_name');
-                        return error ? { error: error.message } : { team_members: data };
-                    },
-                    get_metrics: async () => {
-                        const { data, error } = await supabase.from('time_logs').select('hours');
-                        const totalHours = data?.reduce((sum, log) => sum + (log.hours || 0), 0) || 0;
-                        return error ? { error: error.message } : { total_hours_logged: totalHours };
-                    },
-                    undo_last_action: async () => {
-                        const { data: lastLog, error } = await supabase.from('ai_action_logs').select('*').order('timestamp', { ascending: false }).limit(1).single();
-                        if (error || !lastLog) return { success: false, error: "No actions found to undo." };
-                        const { action_type, details, outcome } = lastLog as any;
-                        try {
-                            if (action_type === 'create_task') await supabase.from('tasks').delete().eq('id', outcome.task.id);
-                            else if (action_type === 'delete_task') await supabase.from('tasks').update({ deleted_at: null }).eq('id', details.task_id);
-                            else if (action_type === 'create_project') await supabase.from('projects').delete().eq('id', outcome.project.id);
-                            else if (action_type === 'delete_project') {
-                                await supabase.from('projects').update({ deleted_at: null }).eq('id', details.project_id);
-                                if (outcome.deleted_task_ids?.length > 0) await supabase.from('tasks').update({ deleted_at: null }).in('id', outcome.deleted_task_ids);
-                            } else if (action_type === 'log_time') {
-                                await supabase.from('time_logs').delete().eq('task_id', details.task_id).eq('hours', details.hours).match({ date: details.date });
-                            }
-                            await supabase.from('ai_action_logs').delete().eq('id', lastLog.id);
-                            return { success: true, message: `Undid the last ${action_type} action.` };
-                        } catch (e: any) {
-                            return { success: false, error: `Undo failed: ${e.message}` };
-                        }
-                    }
-                };
+                console.log(`[TOOL] Turn ${loopCount}: ${name}`);
+                if (MUTATION_TOOLS.has(name)) didMutateFromTools = true;
 
                 let toolResult: any;
                 try {
-                    toolResult = tools[name] ? await tools[name](args) : { error: "Unknown tool" };
+                    toolResult = await execTool(name, args);
                 } catch (e: any) {
                     console.error(`[TOOL ERROR] ${name}:`, e.message);
                     toolResult = { error: e.message };
                 }
 
-                // Add tool call and response to history for the next turn
                 currentContents.push({ role: 'model', parts: [{ functionCall: part.functionCall }] });
                 currentContents.push({ role: 'user', parts: [{ functionResponse: { name, response: toolResult } }] });
                 continue;
             }
 
-            // If we reached here, Gemini returned text (or nothing)
-            const finalReply = part?.text || (loopCount > 1 ? "I've processed your request." : "No response generated.");
-            console.log(`[AI FINAL REPLY] "${finalReply.slice(0, 50)}..."`);
-            return res.json({ text: finalReply, didMutate: didMutateFromTools });
+            // ── Final text turn: stream back as SSE ────────────────────────────
+            console.log(`[API] Turn ${loopCount} is final text — starting SSE stream`);
+            fileLog(`[API] SSE stream start`);
+
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            res.flushHeaders();
+
+            const sse = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+            try {
+                const streamResult = await model.generateContentStream({ contents: currentContents });
+                let fullText = '';
+                for await (const chunk of streamResult.stream) {
+                    const token = chunk.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                    if (token) { fullText += token; sse({ token, done: false }); }
+                }
+                sse({ done: true, didMutate: didMutateFromTools });
+                console.log(`[API] SSE done. ${fullText.length} chars.`);
+                fileLog(`[API] SSE complete`);
+            } catch (streamErr: any) {
+                // Fallback: send whatever the non-streamed turn returned
+                fileLog(`[SSE ERROR] ${streamErr.message} — using fallback`);
+                sse({ token: part?.text || 'I processed your request.', done: false });
+                sse({ done: true, didMutate: didMutateFromTools });
+            }
+
+            res.end();
+            return;
         }
 
         return res.status(500).json({ error: "Maximum tool execution turns reached." });
 
     } catch (error: any) {
-        console.error('[API ERROR] /api/chat:', error.message);
-        return res.status(500).json({ error: "Internal server error", details: error.message });
+        console.error('[API ERROR]', error.message);
+        if (!res.headersSent) {
+            return res.status(500).json({ error: "Internal server error", details: error.message });
+        }
+        res.end();
     }
 }

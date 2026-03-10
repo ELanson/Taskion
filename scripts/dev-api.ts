@@ -67,7 +67,9 @@ const server = http.createServer(async (req, res) => {
                 return mockRes;
             },
             end: () => res.end(),
-            send: (data: any) => res.end(data)
+            send: (data: any) => res.end(data),
+            write: (data: any) => res.write(data),
+            flushHeaders: () => res.flushHeaders ? res.flushHeaders() : undefined
         };
 
         // Use pathToFileURL for Windows compatibility with ESM imports
