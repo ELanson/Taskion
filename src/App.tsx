@@ -1407,7 +1407,8 @@ export default function App() {
 
               <button
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                className={`lg:hidden p-2 ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-100'} rounded-lg transition-all`}
+                className={`p-2 ${isDarkMode ? 'text-gray-400 hover:bg-gray-800' : 'text-gray-500 hover:bg-gray-100'} rounded-lg transition-all`}
+                title="Toggle AI Chat"
               >
                 <MessageSquare size={20} />
               </button>
@@ -2066,9 +2067,10 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setIsSidebarOpen(false)}
-                    className="lg:hidden p-2 text-gray-400 hover:text-gray-600"
+                    className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                    title="Close Chat"
                   >
-                    <Plus size={20} className="rotate-45" />
+                    <X size={20} />
                   </button>
                 </div>
               </div>
