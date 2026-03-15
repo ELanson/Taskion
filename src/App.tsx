@@ -58,7 +58,8 @@ import {
   Navigation,
   Table,
   Download,
-  Layout
+  Layout,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
@@ -98,6 +99,7 @@ import {
 import { WorkflowModule } from './components/WorkflowModule';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { FeatureErrorBoundary } from './components/FeatureErrorBoundary';
 import { FBoardCanvas } from './components/fboard-canvas/FBoardCanvas';
 
 export default function App() {
@@ -1557,6 +1559,7 @@ export default function App() {
                 <AnimatePresence>
                   {activeDashCard === 'time' && (
                     <TotalTimeModal
+                      key="modal-time"
                       onClose={() => setActiveDashCard(null)}
                       timeToday={timeToday}
                       avgDailyTime={avgDailyTime}
@@ -1564,15 +1567,26 @@ export default function App() {
                   )}
                   {activeDashCard === 'completed' && (
                     <TasksCompletedModal
+                      key="modal-completed"
                       onClose={() => setActiveDashCard(null)}
                       completedYesterday={completedYesterday}
                     />
                   )}
-                  {activeDashCard === 'active' && <ActiveTasksModal onClose={() => setActiveDashCard(null)} />}
-                  {activeDashCard === 'focus' && <FocusScoreModal onClose={() => setActiveDashCard(null)} />}
-                  {activeDashCard === 'streak' && <ConsistencyModal onClose={() => setActiveDashCard(null)} />}
-                  {activeDashCard === 'weather' && <WeatherModal weather={weather} isDarkMode={isDarkMode} onClose={() => setActiveDashCard(null)} />}
-                  {activeDashCard === 'traffic' && <TrafficModal traffic={traffic} coords={coords} isDarkMode={isDarkMode} onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'active' && <ActiveTasksModal key="modal-active" onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'focus' && <FocusScoreModal key="modal-focus" onClose={() => setActiveDashCard(null)} />}
+                  {activeDashCard === 'streak' && <ConsistencyModal key="modal-streak" onClose={() => setActiveDashCard(null)} />}
+                  
+                  {activeDashCard === 'weather' && (
+                    <FeatureErrorBoundary key="boundary-weather" featureName="Weather Insight">
+                      <WeatherModal weather={weather} isDarkMode={isDarkMode} onClose={() => setActiveDashCard(null)} />
+                    </FeatureErrorBoundary>
+                  )}
+                  
+                  {activeDashCard === 'traffic' && (
+                    <FeatureErrorBoundary key="boundary-traffic" featureName="Traffic Insight">
+                      <TrafficModal traffic={traffic} coords={coords} isDarkMode={isDarkMode} onClose={() => setActiveDashCard(null)} />
+                    </FeatureErrorBoundary>
+                  )}
                 </AnimatePresence>
 
                 {/* Dual-Column Main Content Grid */}
@@ -1700,13 +1714,15 @@ export default function App() {
                   {/* RIGHT COLUMN: AI + Control Panel */}
                   <div className="space-y-6">
                     {/* A. Role-Tailored AI Insights (KEY DIFFERENTIATOR) */}
-                    {userProfile?.global_role === 'Global Admin' || isAdmin ? (
-                      <AICommandCenter />
-                    ) : userProfile?.global_role === 'Manager' ? (
-                      <TeamInsights />
-                    ) : (
-                      <FocusAssistant />
-                    )}
+                    <FeatureErrorBoundary featureName="AI Insights">
+                      {userProfile?.global_role === 'Global Admin' || isAdmin ? (
+                        <AICommandCenter />
+                      ) : userProfile?.global_role === 'Manager' ? (
+                        <TeamInsights />
+                      ) : (
+                        <FocusAssistant />
+                      )}
+                    </FeatureErrorBoundary>
 
                     {/* B. Environmental Intelligence Summary */}
                     <div className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'} rounded-[20px] border shadow-sm p-6 overflow-hidden relative`}>
@@ -1790,7 +1806,9 @@ export default function App() {
                       </div>
                     </div>
                     {/* C. Pomodoro Timer Widget */}
-                    <PomodoroWidget onOpenFocusMode={() => setIsFocusModeOpen(true)} />
+                    <FeatureErrorBoundary featureName="Pomodoro Timer">
+                      <PomodoroWidget onOpenFocusMode={() => setIsFocusModeOpen(true)} />
+                    </FeatureErrorBoundary>
                   </div>
                 </div>
               </div>
@@ -2095,45 +2113,47 @@ export default function App() {
                 />
               )}
 
-              <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                {messages.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[95%] p-4 rounded-2xl text-sm ${msg.role === 'user'
-                      ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-900/20'
-                      : `${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-gray-300' : 'bg-white border-gray-100 text-gray-700'} border rounded-tl-none shadow-sm`
-                      }`}>
-                      {msg.role === 'assistant' ? (
-                        <div className={`prose prose-sm max-w-none ${isDarkMode ? 'prose-invert' : ''}`}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {msg.content}
-                          </ReactMarkdown>
+                <FeatureErrorBoundary featureName="Chat Messages">
+                  <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                    {messages.map((msg, i) => (
+                      <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[95%] p-4 rounded-2xl text-sm ${msg.role === 'user'
+                          ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-900/20'
+                          : `${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-gray-300' : 'bg-white border-gray-100 text-gray-700'} border rounded-tl-none shadow-sm`
+                          }`}>
+                          {msg.role === 'assistant' ? (
+                            <div className={`prose prose-sm max-w-none ${isDarkMode ? 'prose-invert' : ''}`}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {msg.content}
+                              </ReactMarkdown>
+                            </div>
+                          ) : (
+                            msg.content
+                          )}
                         </div>
-                      ) : (
-                        msg.content
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {isLoading && (
-                  <div className="flex justify-start">
-                    <div className={`${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-gray-300' : 'bg-white border-gray-100 text-gray-700'} border p-4 rounded-2xl rounded-tl-none shadow-sm max-w-[95%]`}>
-                      {streamingMessage ? (
-                        <div className={`prose prose-sm max-w-none ${isDarkMode ? 'prose-invert' : ''}`}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingMessage}</ReactMarkdown>
-                          <span className="inline-block w-1.5 h-4 bg-indigo-500 ml-0.5 align-middle animate-pulse rounded-sm" />
+                      </div>
+                    ))}
+                    {isLoading && (
+                      <div className="flex justify-start">
+                        <div className={`${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-gray-300' : 'bg-white border-gray-100 text-gray-700'} border p-4 rounded-2xl rounded-tl-none shadow-sm max-w-[95%]`}>
+                          {streamingMessage ? (
+                            <div className={`prose prose-sm max-w-none ${isDarkMode ? 'prose-invert' : ''}`}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingMessage}</ReactMarkdown>
+                              <span className="inline-block w-1.5 h-4 bg-indigo-500 ml-0.5 align-middle animate-pulse rounded-sm" />
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <Loader2 size={16} className="animate-spin text-indigo-600" />
+                              <span className="text-xs text-gray-400 font-medium">Thinking...</span>
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <Loader2 size={16} className="animate-spin text-indigo-600" />
-                          <span className="text-xs text-gray-400 font-medium">Thinking...</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                      </div>
+                    )}
 
-                <div ref={chatEndRef} />
-              </div>
+                    <div ref={chatEndRef} />
+                  </div>
+                </FeatureErrorBoundary>
 
               <div className={`p-6 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
                 <form onSubmit={handleSendMessage} className="relative">

@@ -1208,7 +1208,6 @@ export const useAppStore = create<AppState>()(
             setUser: async (user) => {
                 set({ user });
                 if (user) {
-                    console.log('[Store] Fetching profile for user:', user.id);
                     const { data: profile, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
                     
                     if (error) {
@@ -1216,7 +1215,6 @@ export const useAppStore = create<AppState>()(
                     }
 
                     if (profile) {
-                        console.log('[Store] Found profile in DB:', profile.full_name);
                         set({
                             userProfile: {
                                 name: profile.full_name || 'Guest User',

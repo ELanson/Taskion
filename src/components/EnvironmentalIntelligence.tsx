@@ -122,7 +122,6 @@ export const useEnvironmentalData = () => {
         const fetchLocationAndData = async () => {
             // Priority 1: User Profile Override
             if (userProfile.coords) {
-                console.log("Using Profile Location Override:", userProfile.location);
                 setCoords(userProfile.coords);
                 setLocationPermission('overridden');
                 fetchMockData(userProfile.coords, userProfile.location || 'Your Location');
@@ -560,6 +559,7 @@ export const WeatherLottie = ({ condition, className = "" }: { condition: string
     return (
         <div className={className}>
             <DotLottiePlayer
+                key={src}
                 src={src}
                 autoplay
                 loop

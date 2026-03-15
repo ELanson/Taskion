@@ -92,7 +92,6 @@ export function downloadCalendarICS(items: (Appointment | Task)[], filename = 't
  * Requires VITE_GOOGLE_CLIENT_ID and proper redirect URIs.
  */
 export async function syncToGoogleCalendar(events: GCalEvent[]) {
-    console.log('Synchronizing to Google Calendar...', events);
     // Implementation would involve:
     // 1. gapi.client.init with credentials
     // 2. gapi.auth2.getAuthInstance().signIn()
