@@ -14,7 +14,7 @@ import { unitToPx, pxToUnit } from './utils';
 import logo from './assets/logo.svg';
 import logoInvert from './assets/logo-invert.svg';
 import { useAppStore } from '../../store/useAppStore';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ChevronDown } from 'lucide-react';
 
 const DEFAULT_CONFIG: BoardConfig = {
   width: 300,
@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: BoardConfig = {
 export function FBoardCanvas() {
   const { setActiveTab, isAdmin } = useAppStore();
   const [setupMode, setSetupMode] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
   const [mode, setMode] = useState<'single' | 'batch'>('single');
   const [config, setConfig] = useState<BoardConfig>(DEFAULT_CONFIG);
   const [batchData, setBatchData] = useState<BatchItem[]>([]);
@@ -53,6 +54,7 @@ export function FBoardCanvas() {
   const [showStudioLock, setShowStudioLock] = useState(false);
   const [tilingViewWidth, setTilingViewWidth] = useState<120 | 150>(150);
   const [productionName, setProductionName] = useState('New Production');
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const handleConfigChange = (key: keyof BoardConfig, value: any) => {
@@ -982,41 +984,41 @@ export function FBoardCanvas() {
 
   if (setupMode) {
     return (
-      <div className="fixed inset-0 z-[9999] w-screen h-screen bg-gradient-to-br from-indigo-50 via-white to-cyan-50 flex flex-col items-center justify-center p-6 font-sans overflow-hidden">
-        <div className="w-20 h-20 mb-6 drop-shadow-xl animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="fixed inset-0 z-[9999] w-screen h-screen bg-gradient-to-br from-indigo-50 via-white to-cyan-50 flex flex-col items-center justify-start md:justify-center p-4 md:p-6 pt-20 md:pt-6 font-sans overflow-y-auto">
+        <div className="w-12 h-12 md:w-20 md:h-20 mb-4 md:mb-6 drop-shadow-xl animate-in fade-in slide-in-from-bottom-4 duration-700 shrink-0">
           <img src={logo} alt="FBoard Logo" className="w-full h-full object-contain" />
         </div>
-        <h1 className="text-5xl font-black text-neutral-900 mb-2 tracking-tighter">
+        <h1 className="text-3xl md:text-5xl font-black text-neutral-900 mb-2 tracking-tighter shrink-0">
           FBoard
         </h1>
-        <p className="text-neutral-500 mb-12">Choose your fascia layout to get started</p>
+        <p className="text-neutral-500 mb-8 md:mb-12 text-sm md:text-base text-center shrink-0">Choose your fascia layout to get started</p>
 
         {/* Exit Button */}
         <button 
           onClick={() => setActiveTab('dashboard')}
-          className="absolute top-8 left-8 flex items-center gap-2 px-4 py-2 bg-white/50 hover:bg-white border border-neutral-200 rounded-xl text-neutral-600 hover:text-neutral-900 transition-all shadow-sm hover:shadow-md group active:scale-95"
+          className="absolute top-4 left-4 md:top-8 md:left-8 flex items-center gap-2 px-3 py-1.5 md:px-4 md:py-2 bg-white/50 hover:bg-white border border-neutral-200 rounded-xl text-neutral-600 hover:text-neutral-900 transition-all shadow-sm hover:shadow-md group active:scale-95"
         >
           <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
-          <span className="text-xs font-bold uppercase tracking-widest">Exit to Tickel</span>
+          <span className="text-[10px] md:text-xs font-bold uppercase tracking-widest">Exit to Tickel</span>
         </button>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl w-full">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 max-w-3xl w-full">
           {/* Text Only Option */}
           <button 
             onClick={() => {
               handleConfigChange('layout', 'text-only');
               setSetupMode(false);
             }}
-            className="bg-white p-8 rounded-3xl shadow-sm border border-neutral-100 hover:shadow-md hover:border-indigo-200 transition-all text-left group"
+            className="bg-white p-6 md:p-8 rounded-2xl md:rounded-3xl shadow-sm border border-neutral-100 hover:shadow-md hover:border-indigo-200 transition-all text-left group"
           >
-            <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-500 mb-6 group-hover:scale-110 transition-transform">
-              <Type className="w-6 h-6" />
+            <div className="w-10 h-10 md:w-12 md:h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-500 mb-4 md:mb-6 group-hover:scale-110 transition-transform">
+              <Type className="w-5 h-5 md:w-6 md:h-6" />
             </div>
-            <div className="w-full h-20 border-2 border-dashed border-indigo-100 rounded-xl bg-indigo-50/30 flex items-center justify-center mb-6">
-              <span className="text-indigo-400 font-bold text-sm">Company Name</span>
+            <div className="w-full h-16 md:h-20 border-2 border-dashed border-indigo-100 rounded-xl bg-indigo-50/30 flex items-center justify-center mb-4 md:mb-6">
+              <span className="text-indigo-400 font-bold text-xs md:text-sm">Company Name</span>
             </div>
-            <h3 className="text-lg font-bold text-neutral-900 mb-2">Text Only</h3>
-            <p className="text-sm text-neutral-500 leading-relaxed">
+            <h3 className="text-base md:text-lg font-bold text-neutral-900 mb-1 md:mb-2">Text Only</h3>
+            <p className="text-xs md:text-sm text-neutral-500 leading-relaxed">
               Full-width text across the fascia board with customisable margins, font, size and colour.
             </p>
           </button>
@@ -1027,18 +1029,18 @@ export function FBoardCanvas() {
               handleConfigChange('layout', 'with-logos');
               setSetupMode(false);
             }}
-            className="bg-white p-8 rounded-3xl shadow-sm border border-neutral-100 hover:shadow-md hover:border-cyan-200 transition-all text-left group"
+            className="bg-white p-6 md:p-8 rounded-2xl md:rounded-3xl shadow-sm border border-neutral-100 hover:shadow-md hover:border-cyan-200 transition-all text-left group"
           >
-            <div className="w-12 h-12 bg-cyan-50 rounded-xl flex items-center justify-center text-cyan-500 mb-6 group-hover:scale-110 transition-transform">
-              <LayoutTemplate className="w-6 h-6" />
+            <div className="w-10 h-10 md:w-12 md:h-12 bg-cyan-50 rounded-xl flex items-center justify-center text-cyan-500 mb-4 md:mb-6 group-hover:scale-110 transition-transform">
+              <LayoutTemplate className="w-5 h-5 md:w-6 md:h-6" />
             </div>
-            <div className="w-full h-20 border-2 border-dashed border-cyan-100 rounded-xl bg-cyan-50/30 flex items-center justify-between px-3 mb-6">
-              <div className="w-10 h-10 bg-cyan-100/50 rounded flex items-center justify-center text-[8px] font-bold text-cyan-600">LOGO</div>
-              <span className="text-cyan-500 font-bold text-sm">Company Name</span>
-              <div className="w-10 h-10 bg-cyan-100/50 rounded flex items-center justify-center text-[8px] font-bold text-cyan-600">LOGO</div>
+            <div className="w-full h-16 md:h-20 border-2 border-dashed border-cyan-100 rounded-xl bg-cyan-50/30 flex items-center justify-between px-3 mb-4 md:mb-6">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-cyan-100/50 rounded flex items-center justify-center text-[7px] md:text-[8px] font-bold text-cyan-600">LOGO</div>
+              <span className="text-cyan-500 font-bold text-xs md:text-sm">Company Name</span>
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-cyan-100/50 rounded flex items-center justify-center text-[7px] md:text-[8px] font-bold text-cyan-600">LOGO</div>
             </div>
-            <h3 className="text-lg font-bold text-neutral-900 mb-2">With Logos</h3>
-            <p className="text-sm text-neutral-500 leading-relaxed">
+            <h3 className="text-base md:text-lg font-bold text-neutral-900 mb-1 md:mb-2">With Logos</h3>
+            <p className="text-xs md:text-sm text-neutral-500 leading-relaxed">
               Logo placeholders left & right. Each starts at 5cm from edge, max 5cm wide. Text fits between the logo zones.
             </p>
           </button>
@@ -1054,50 +1056,64 @@ export function FBoardCanvas() {
   return (
     <div className="fixed inset-0 z-[9999] flex flex-col h-screen w-screen bg-neutral-100 font-sans overflow-hidden">
       {/* Top Header */}
-      <header className="h-16 bg-white border-b border-neutral-200 flex items-center justify-between px-6 shrink-0 z-20">
-        <div className="flex items-center gap-4">
+      <header className="h-14 md:h-16 bg-white border-b border-neutral-200 flex items-center justify-between px-2 md:px-6 shrink-0 z-20">
+        <div className="flex items-center gap-1 md:gap-4 shrink-0">
+          {/* Mobile Sidebar Toggle - ALWAYS VISIBLE ON MOBILE */}
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="lg:hidden p-2 hover:bg-neutral-100 rounded-lg transition-colors text-neutral-600 active:bg-indigo-50 shrink-0"
+            aria-label="Toggle Sidebar"
+          >
+            <Settings className={`w-5 h-5 transition-transform ${isSidebarOpen ? 'rotate-90 text-indigo-600' : ''}`} />
+          </button>
+
           <button 
             onClick={() => setSetupMode(true)}
-            className="p-2 hover:bg-neutral-100 rounded-lg transition-colors text-neutral-500 hover:text-neutral-900 flex items-center gap-2 group"
+            className="p-1.5 md:p-2 hover:bg-neutral-100 rounded-lg transition-colors text-neutral-500 hover:text-neutral-900 flex items-center gap-1 md:gap-2 group shrink-0"
             title="Back to Hub"
           >
-            <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform" />
-            <span className="text-xs font-bold uppercase tracking-tight">Hub</span>
+            <ArrowLeft className="w-4 h-4 md:w-5 md:h-5 group-hover:-translate-x-1 transition-transform" />
+            <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-tight">Hub</span>
           </button>
           
-          <div className="h-8 w-px bg-neutral-200 mx-2"></div>
+          <div className="hidden xs:block h-6 md:h-8 w-px bg-neutral-200 mx-0.5 md:mx-2 shrink-0"></div>
           
-          <img src={logo} alt="FBoard" className="w-8 h-8 object-contain" />
-          <div className="flex flex-col justify-center">
-            <h1 className="text-xl font-bold text-neutral-900 tracking-tight leading-tight">FBoard</h1>
+          <img src={logo} alt="FBoard" className="hidden xs:block w-6 h-6 md:w-8 md:h-8 object-contain shrink-0" />
+          <div className="hidden lg:flex flex-col justify-center">
+            <h1 className="text-lg md:text-xl font-bold text-neutral-900 tracking-tight leading-tight">FBoard</h1>
             <p className="text-[10px] text-indigo-600 font-bold uppercase tracking-widest -mt-0.5">by Rickel Industries</p>
           </div>
-          <div className="h-8 w-px bg-neutral-200 mx-3"></div>
-          <div className="flex flex-col">
-            <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-tight">Production Name</label>
+          <div className="flex flex-col min-w-0 max-w-[80px] sm:max-w-[120px] md:max-w-[200px]">
+            <label className="hidden md:block text-[9px] font-bold text-neutral-400 uppercase tracking-tight truncate">Production</label>
             <input
               type="text"
               value={productionName}
               onChange={(e) => setProductionName(e.target.value)}
-              placeholder="e.g. Summer Festival 2026"
-              className="text-sm text-neutral-900 bg-transparent border-none focus:ring-0 p-0 w-64 outline-none placeholder:text-neutral-400 font-bold -mt-1"
+              placeholder="Title"
+              className="text-xs md:text-sm text-neutral-900 bg-transparent border-none focus:ring-0 p-0 w-full outline-none placeholder:text-neutral-400 font-bold -mt-0.5 sm:-mt-1 truncate"
             />
           </div>
         </div>
         
-        <div className="flex items-center gap-4">
-          <div className="text-sm text-neutral-500 font-medium">
+        <div className="flex items-center gap-1 md:gap-2 shrink-0">
+          <div className="hidden 2xl:block text-sm text-neutral-500 font-medium whitespace-nowrap">
             <span className="text-neutral-900 font-bold">{batchData.length > 0 ? batchData.length : 1}</span> boards &bull; <span className="text-neutral-900 font-bold">{batchData.length > 0 ? batchData.reduce((sum, item) => sum + item.copies, 0) : 1}</span> copies
           </div>
           
-          <div className="h-6 w-px bg-neutral-200 mx-2"></div>
+          <div className="hidden 2xl:block h-6 w-px bg-neutral-200 mx-1 md:mx-2"></div>
           
-          <button onClick={handleAddBatchItemAndSwitchMode} className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors">
-            <Plus className="w-4 h-4" /> New
+          <button 
+            onClick={handleAddBatchItemAndSwitchMode} 
+            className="flex items-center gap-1 px-2 py-1.5 text-xs md:text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors shadow-sm shrink-0"
+            title="New Board"
+          >
+            <Plus className="w-4 h-4 text-indigo-600" /> 
+            <span className="hidden lg:inline">New</span>
           </button>
           
-          <label className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors cursor-pointer mb-0">
-            <FileUp className="w-4 h-4" /> Import
+          <label className="flex items-center gap-1 px-2 py-1.5 text-xs md:text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors cursor-pointer mb-0 shrink-0 shadow-sm" title="Import Data">
+            <FileUp className="w-4 h-4" /> 
+            <span className="hidden lg:inline">Import</span>
             <input 
               type="file" 
               accept=".xlsx, .xls, .csv" 
@@ -1106,30 +1122,96 @@ export function FBoardCanvas() {
             />
           </label>
           
-          <button onClick={exportBatch} disabled={batchData.length === 0} className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-            Project PDF
-          </button>
-          
-          <button onClick={() => setShowTilingModal(true)} disabled={batchData.length === 0} className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-md hover:bg-indigo-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-            <Grid2X2 className="w-4 h-4" /> Tiling
-          </button>
-          
-          <button onClick={exportZIP} disabled={batchData.length === 0} className="flex items-center gap-4 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-md hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
-            Export ZIP
+          <button onClick={() => setShowTilingModal(true)} disabled={batchData.length === 0} className="flex items-center gap-1 px-2 py-1.5 text-xs md:text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-md hover:bg-indigo-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0 shadow-sm" title="Tiling View">
+            <Grid2X2 className="w-4 h-4" /> 
+            <span className="hidden lg:inline font-bold uppercase tracking-wider">Tiling</span>
           </button>
 
+          <div className="relative shrink-0">
+            <button 
+              onClick={() => setShowDownloadMenu(!showDownloadMenu)} 
+              disabled={batchData.length === 0}
+              className={`flex items-center gap-1 px-2 md:px-3 py-1.5 text-xs md:text-sm font-bold text-white transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed rounded-md
+                ${showDownloadMenu ? 'bg-blue-700 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700'}
+              `}
+              title="Download Options"
+            >
+              <Download className="w-4 h-4" />
+              <span className="hidden sm:inline">Download</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showDownloadMenu ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showDownloadMenu && (
+              <>
+                <div 
+                  className="fixed inset-0 z-30" 
+                  onClick={() => setShowDownloadMenu(false)}
+                />
+                <div className="absolute right-0 mt-2 w-48 bg-white border border-neutral-200 rounded-xl shadow-2xl z-40 overflow-hidden animate-in fade-in zoom-in-95 duration-200 origin-top-right">
+                  <div className="p-1">
+                    <button
+                      onClick={() => {
+                        exportBatch();
+                        setShowDownloadMenu(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm font-medium text-neutral-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-lg transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-neutral-100 flex items-center justify-center group-hover:bg-indigo-100 transition-colors">
+                        <Download className="w-4 h-4 text-neutral-500 group-hover:text-indigo-600" />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold uppercase tracking-wider">Project PDF</span>
+                        <span className="text-[10px] text-neutral-400 font-normal">All boards in one file</span>
+                      </div>
+                    </button>
+
+                    <div className="h-px bg-neutral-100 my-1"></div>
+
+                    <button
+                      onClick={() => {
+                        exportZIP();
+                        setShowDownloadMenu(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm font-medium text-neutral-700 hover:bg-blue-50 hover:text-blue-700 rounded-lg transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-neutral-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                        <Download className="w-4 h-4 text-neutral-500 group-hover:text-blue-600" />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold uppercase tracking-wider">Export ZIP</span>
+                        <span className="text-[10px] text-neutral-400 font-normal">Individual assets</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          
           <button 
             onClick={() => isAdmin ? setShowVectorStudio(true) : setShowStudioLock(true)} 
-            className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-white bg-gradient-to-r from-purple-600 to-indigo-600 border border-transparent rounded-md hover:from-purple-700 hover:to-indigo-700 transition-all shadow-md hover:shadow-lg active:scale-95"
+            className="hidden md:flex items-center gap-1 px-2 py-1.5 text-xs md:text-sm font-bold text-white bg-gradient-to-r from-purple-600 to-indigo-600 border border-transparent rounded-md hover:from-purple-700 hover:to-indigo-700 transition-all shadow-md active:scale-95 shrink-0"
+            title="Vector Studio"
           >
-            <Monitor className="w-4 h-4" /> Vector Studio
+            <Monitor className="w-4 h-4 text-white" /> 
+            <span className="hidden xl:inline uppercase tracking-wider">Studio</span>
           </button>
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Mobile Sidebar Overlay */}
+        {isSidebarOpen && (
+          <div 
+            className="lg:hidden fixed inset-0 bg-black/20 z-20 backdrop-blur-[1px]" 
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
         {/* Sidebar */}
-        <div className="w-96 bg-white border-r border-neutral-200 flex flex-col shadow-sm z-10">
+        <div className={`
+          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0 lg:w-0 lg:overflow-hidden'}
+          fixed lg:relative inset-y-0 left-0 w-80 md:w-96 bg-white border-r border-neutral-200 flex flex-col shadow-xl lg:shadow-sm z-30 lg:z-10 transition-transform lg:transition-[width] duration-300 ease-in-out
+        `}>
           {/* Mode Toggle */}
           <div className="flex p-4 border-b border-neutral-100 bg-neutral-50/50">
           <button
@@ -1150,13 +1232,13 @@ export function FBoardCanvas() {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 md:space-y-8">
           {mode === 'single' ? (
             <>
               {/* Dimensions Section */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-neutral-900 font-medium">
-                  <Settings className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-neutral-900 font-bold text-sm md:text-base">
+                  <Settings className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <h2>Dimensions</h2>
                 </div>
                 
@@ -1197,8 +1279,8 @@ export function FBoardCanvas() {
 
               {/* Print Setup Section */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-neutral-900 font-medium">
-                  <Layers className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-neutral-900 font-bold text-sm md:text-base">
+                  <Layers className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <h2>Print Setup</h2>
                 </div>
                 
@@ -1293,8 +1375,8 @@ export function FBoardCanvas() {
               {((config.layout === 'with-logos') ||
                 (selectedBatchIndices.some(idx => batchData[idx].layout === 'with-logos'))) && (
                 <section className="space-y-4">
-                  <div className="flex items-center gap-2 text-neutral-900 font-medium">
-                    <ImageIcon className="w-4 h-4" />
+                  <div className="flex items-center gap-2 text-neutral-900 font-bold text-sm md:text-base">
+                    <ImageIcon className="w-3.5 h-3.5 md:w-4 md:h-4" />
                     <h2>Logos</h2>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
@@ -1358,8 +1440,8 @@ export function FBoardCanvas() {
               {/* Content Section */}
               <section className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-neutral-900 font-medium">
-                    <Type className="w-4 h-4" />
+                  <div className="flex items-center gap-2 text-neutral-900 font-bold text-sm md:text-base">
+                    <Type className="w-3.5 h-3.5 md:w-4 md:h-4" />
                     <h2>Typography</h2>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1466,8 +1548,8 @@ export function FBoardCanvas() {
 
               {/* Colors Section */}
               <section className="space-y-4">
-                <div className="flex items-center gap-2 text-neutral-900 font-medium">
-                  <Palette className="w-4 h-4" />
+                <div className="flex items-center gap-2 text-neutral-900 font-bold text-sm md:text-base">
+                  <Palette className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <h2>Colors</h2>
                 </div>
                 
@@ -1547,8 +1629,8 @@ export function FBoardCanvas() {
 
               {batchData.length > 0 && (
                 <div className="space-y-3">
-                  <div className="max-h-64 overflow-y-auto border border-neutral-200 rounded-md bg-white">
-                    <table className="w-full text-left text-xs">
+                  <div className="max-h-64 overflow-auto border border-neutral-200 rounded-md bg-white">
+                    <table className="min-w-[400px] w-full text-left text-[10px] md:text-xs">
                       <thead className="bg-neutral-50 sticky top-0 z-10 shadow-sm">
                         <tr>
                           <th className="px-3 py-2 font-medium text-neutral-500">Name</th>
@@ -1611,37 +1693,37 @@ export function FBoardCanvas() {
       {/* Main Preview Area */}
       <div className="flex-1 flex flex-col overflow-hidden bg-neutral-100">
         {/* Top bar */}
-        <div className="h-16 bg-white border-b border-neutral-200 flex items-center px-8 justify-between shrink-0">
+        <div className="h-14 md:h-16 bg-white border-b border-neutral-200 flex items-center px-4 md:px-8 justify-between shrink-0">
           {mode === 'single' && selectedBatchIndices.length === 0 ? (
             <>
-              <div className="flex items-center gap-6">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-red-500"></div>
-                  <span className="text-xs font-medium text-neutral-600">Bleed Edge</span>
+              <div className="flex items-center gap-3 md:gap-6 overflow-x-auto no-scrollbar">
+                <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-red-500"></div>
+                  <span className="text-[10px] md:text-xs font-medium text-neutral-600">Bleed</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-black"></div>
-                  <span className="text-xs font-medium text-neutral-600">Trim Line</span>
+                <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-black"></div>
+                  <span className="text-[10px] md:text-xs font-medium text-neutral-600">Trim</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-                  <span className="text-xs font-medium text-neutral-600">Safe Zone (Margin)</span>
+                <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-blue-500"></div>
+                  <span className="text-[10px] md:text-xs font-medium text-neutral-600">Safe</span>
                 </div>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2 md:gap-4 shrink-0">
                 <button
                   onClick={() => setShowTilingView(!showTilingView)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${
+                  className={`flex items-center gap-2 px-2.5 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all ${
                     showTilingView 
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' 
                       : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200'
                   }`}
                 >
                   <Grid2X2 className="w-3.5 h-3.5" />
-                  {showTilingView ? 'Tiling View On' : 'View Tiled Sheet'}
+                  <span className="hidden sm:inline">{showTilingView ? 'Tiling On' : 'View Tiling'}</span>
                 </button>
-                <div className="text-sm text-neutral-500 font-mono">
-                  {config.width} x {config.height} {config.unit}
+                <div className="text-[10px] md:text-sm text-neutral-500 font-mono">
+                  {config.width}x{config.height}{config.unit}
                 </div>
               </div>
             </>
