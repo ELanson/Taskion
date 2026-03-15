@@ -15,6 +15,7 @@ export interface Task {
     due_date?: string;
     start_date?: string;
     assignee_id?: string;
+    assignee_ids?: string[]; // Multi-assignee support
     subtasks?: { title: string; completed: boolean }[];
     dependencies?: number[];
     tags?: string[];
@@ -659,6 +660,7 @@ export const useAppStore = create<AppState>()(
                 due_date: '',
                 start_date: '',
                 assignee_id: '',
+                assignee_ids: [],
                 subtasks: [],
                 tags: [],
                 dependencies: [],

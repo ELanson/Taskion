@@ -375,6 +375,8 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [aiTaskPrompt, setAiTaskPrompt] = useState('');
   const [newSubtask, setNewSubtask] = useState('');
+  const [depSearch, setDepSearch] = useState(''); // New state for dependency searching
+  const [assigneeSearch, setAssigneeSearch] = useState(''); // New state for assignee searching
   const [activeDashCard, setActiveDashCard] = useState<'time' | 'completed' | 'active' | 'focus' | 'streak' | 'weather' | 'traffic' | null>(null);
   const [broadcastFormData, setBroadcastFormData] = useState({ title: '', body: '', type: 'info' as AppNotification['type'] });
   const [isBroadcasting, setIsBroadcasting] = useState(false);
@@ -505,10 +507,12 @@ export default function App() {
         due_date: task.due_date || '',
         start_date: task.start_date || '',
         assignee_id: task.assignee_id || '',
+        assignee_ids: task.assignee_ids || [],
         subtasks: task.subtasks || [],
         tags: task.tags || [],
         is_private: task.is_private || false,
-        budget: task.budget || 0
+        budget: task.budget || 0,
+        dependencies: task.dependencies || []
       });
     } else {
       setEditingTask(null);
@@ -522,10 +526,12 @@ export default function App() {
         due_date: '',
         start_date: '',
         assignee_id: user?.id || '',
+        assignee_ids: [user?.id].filter(Boolean) as string[],
         subtasks: [],
         tags: [],
         is_private: false,
-        budget: 0
+        budget: 0,
+        dependencies: []
       });
     }
     setIsModalOpen(true);
@@ -1876,13 +1882,23 @@ export default function App() {
                   <div className={`grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6 pb-20 mt-4 transition-opacity duration-300 ${isRefreshing ? 'opacity-50' : 'opacity-100'}`}>
                     {(Array.isArray(tasks) ? tasks : []).map(task => {
                       const isOverdue = !!(task.due_date && task.status !== 'done' && new Date(task.due_date) < new Date());
+                      
+                      // Dependency & Subtask logic
+                      const taskDependencies = (task.dependencies || []) as number[];
+                      const blockedByTasks = tasks.filter(t => taskDependencies.includes(t.id) && t.status !== 'done');
+                      const isBlocked = blockedByTasks.length > 0 && task.status !== 'done';
+                      
+                      const totalSubtasks = (task.subtasks || []).length;
+                      const completedSubtasks = (task.subtasks || []).filter((s: any) => s.completed).length;
+                      const subtaskProgress = totalSubtasks > 0 ? (completedSubtasks / totalSubtasks) * 100 : 0;
+
                       return (
                         <motion.div
                           layout
                           key={task.id}
                           className={`${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'
                             } p-6 rounded-2xl border shadow-sm hover:shadow-md transition-shadow group relative overflow-hidden ${isOverdue ? 'border-red-500/30' : ''
-                            }`}
+                            } ${isBlocked ? 'opacity-80' : ''}`}
                         >
                           {/* Overdue pulsing right-edge stroke */}
                           {isOverdue && (
@@ -1913,9 +1929,17 @@ export default function App() {
                           </div>
                           <div className="flex justify-between items-start mb-4 pr-14">
                             <div className="flex flex-col gap-1.5">
-                              <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border w-fit ${getPriorityColor(task.priority)}`}>
-                                {task.priority}
-                              </span>
+                              <div className="flex gap-2">
+                                <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border w-fit ${getPriorityColor(task.priority)}`}>
+                                  {task.priority}
+                                </span>
+                                {isBlocked && (
+                                  <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-500">
+                                    <AlertTriangle size={10} />
+                                    Blocked
+                                  </span>
+                                )}
+                              </div>
                               {isOverdue && (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-md bg-red-500/15 border border-red-500/30 text-red-400 w-fit">
                                   <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
@@ -1927,6 +1951,24 @@ export default function App() {
                           </div>
                           <h4 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-2 pr-12`}>{task.title}</h4>
                           <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} line-clamp-2 mb-4`}>{task.description}</p>
+                          
+                          {/* Subtask Progress Bar */}
+                          {totalSubtasks > 0 && (
+                            <div className="mb-4">
+                              <div className="flex justify-between items-center mb-1.5">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Objectives</span>
+                                <span className="text-[10px] font-bold text-indigo-500">{completedSubtasks}/{totalSubtasks}</span>
+                              </div>
+                              <div className={`h-1.5 w-full rounded-full ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'} overflow-hidden`}>
+                                <motion.div 
+                                  initial={{ width: 0 }}
+                                  animate={{ width: `${subtaskProgress}%` }}
+                                  className="h-full bg-indigo-500 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)]"
+                                />
+                              </div>
+                            </div>
+                          )}
+
                           <div className={`flex items-center justify-between pt-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-50'}`}>
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                               <div className="flex items-center gap-1">
@@ -1944,12 +1986,18 @@ export default function App() {
                               </button>
                             </div>
                             <div className="flex items-center gap-2">
-                              <div className={`px-3 py-1 rounded-full text-xs font-medium ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') :
-                                task.status === 'in_progress' ? (isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600') :
-                                  (isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600')
-                                }`}>
-                                {task.status.replace('_', ' ')}
-                              </div>
+                              {isBlocked && task.status !== 'done' ? (
+                                <div className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest bg-amber-500/10 text-amber-500 border border-amber-500/20`}>
+                                  Blocked
+                                </div>
+                              ) : (
+                                <div className={`px-3 py-1 rounded-full text-xs font-medium ${task.status === 'done' ? (isDarkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-600') :
+                                  task.status === 'in_progress' ? (isDarkMode ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600') :
+                                    (isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600')
+                                  }`}>
+                                  {task.status.replace('_', ' ')}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </motion.div>
@@ -2338,31 +2386,102 @@ export default function App() {
                           </div>
                         </div>
                         <div>
-                          <label className="block text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] mb-2.5 ml-1">Assignee</label>
+                          <label className="block text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] mb-2.5 ml-1">Team / Assignees</label>
+                          <div className="flex flex-wrap gap-2 mb-3">
+                            {(formData.assignee_ids || []).map((uid: string) => {
+                              const profile = allProfiles.find(p => p.id === uid);
+                              return (
+                                <div key={uid} className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[10px] font-bold text-indigo-400">
+                                  <div className="w-4 h-4 rounded-full bg-indigo-500 flex items-center justify-center text-[8px] text-white">
+                                    {(profile?.full_name || '?').charAt(0)}
+                                  </div>
+                                  <span>{profile?.full_name || 'Member'}</span>
+                                  {userProfile?.global_role !== 'Contributor' && (
+                                    <button 
+                                      type="button" 
+                                      onClick={() => setFormData(prev => ({ 
+                                        ...prev, 
+                                        assignee_ids: prev.assignee_ids?.filter((id: string) => id !== uid),
+                                        assignee_id: prev.assignee_ids?.filter((id: string) => id !== uid)[0] || ''
+                                      }))}
+                                      className="hover:text-red-400"
+                                    >
+                                      <X size={10} />
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                           <div className="relative group">
                             <User className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-indigo-500 transition-colors" size={16} />
-                            <select
-                              value={formData.assignee_id}
-                              onChange={e => setFormData(prev => ({ ...prev, assignee_id: e.target.value }))}
+                            <input
+                              type="text"
+                              placeholder={userProfile?.global_role === 'Contributor' ? 'You are assigned' : 'Search members to add...'}
+                              value={assigneeSearch}
+                              onChange={e => setAssigneeSearch(e.target.value)}
                               disabled={userProfile?.global_role === 'Contributor'}
-                              className={`w-full pl-12 pr-4 py-3.5 rounded-2xl border-2 appearance-none transition-all ${userProfile?.global_role === 'Contributor' ? 'opacity-50 cursor-not-allowed ' : ''}${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white focus:border-indigo-500' : 'bg-gray-50 border-gray-100 focus:border-indigo-500'}`}
-                            >
-                              <option value="">Select Citizen...</option>
-                              {allProfiles.filter(p => {
-                                const role = userProfile?.global_role;
-                                if (role === 'Global Admin' || role === 'Department Admin' || isAdmin) return true;
-                                if (role === 'Manager') {
-                                  const myTeamIds = new Set(teams.filter(t => t.members?.some((m: any) => m.user_id === user?.id)).map(t => t.id));
-                                  const myDeptIds = new Set(teams.filter(t => myTeamIds.has(t.id)).map(t => t.department_id));
-                                  const allowedTeamIds = new Set(teams.filter(t => myDeptIds.has(t.department_id)).map(t => t.id));
-                                  return teams.some(t => allowedTeamIds.has(t.id) && t.members?.some((m: any) => m.user_id === p.id));
-                                }
-                                return p.id === user?.id; // Contributor
-                              }).map(p => (
-                                <option key={p.id} value={p.id}>{p.full_name || p.email}</option>
-                              ))}
-                            </select>
-                            <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+                              className={`w-full pl-12 pr-4 py-3.5 rounded-2xl border-2 transition-all ${userProfile?.global_role === 'Contributor' ? 'opacity-50 cursor-not-allowed ' : ''}${isDarkMode ? 'bg-[#1A1A1C] border-gray-800 text-white focus:border-indigo-500' : 'bg-gray-50 border-gray-100 focus:border-indigo-500'}`}
+                            />
+                            <AnimatePresence>
+                              {assigneeSearch && (
+                                <motion.div 
+                                  initial={{ opacity: 0, y: 10 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0, y: 10 }}
+                                  className={`absolute top-full left-0 w-full mt-2 rounded-xl border-2 z-50 shadow-2xl overflow-hidden ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100'}`}
+                                >
+                                  <div className="max-h-[200px] overflow-y-auto custom-scrollbar">
+                                    {allProfiles
+                                      .filter(p => {
+                                        // Reuse visibility logic
+                                        const role = userProfile?.global_role;
+                                        let isVisible = false;
+                                        if (role === 'Global Admin' || role === 'Department Admin' || isAdmin) isVisible = true;
+                                        else if (role === 'Manager') {
+                                          const myTeamIds = new Set(teams.filter(t => t.members?.some((m: any) => m.user_id === user?.id)).map(t => t.id));
+                                          const myDeptIds = new Set(teams.filter(t => myTeamIds.has(t.id)).map(t => t.department_id));
+                                          const allowedTeamIds = new Set(teams.filter(t => myDeptIds.has(t.department_id)).map(t => t.id));
+                                          isVisible = teams.some(t => allowedTeamIds.has(t.id) && t.members?.some((m: any) => m.user_id === p.id));
+                                        } else {
+                                          isVisible = p.id === user?.id;
+                                        }
+
+                                        return isVisible && 
+                                          !formData.assignee_ids?.includes(p.id) &&
+                                          ((p.full_name || '').toLowerCase().includes(assigneeSearch.toLowerCase()) || (p.email || '').toLowerCase().includes(assigneeSearch.toLowerCase()));
+                                      })
+                                      .map(p => (
+                                        <button
+                                          key={p.id}
+                                          type="button"
+                                          onClick={() => {
+                                            const newIds = [...(formData.assignee_ids || []), p.id];
+                                            setFormData(prev => ({ 
+                                              ...prev, 
+                                              assignee_ids: newIds,
+                                              assignee_id: newIds[0] // Set primary for backward compatibility
+                                            }));
+                                            setAssigneeSearch('');
+                                          }}
+                                          className={`w-full text-left px-5 py-3.5 text-xs transition-colors border-b last:border-none ${isDarkMode ? 'border-gray-800 hover:bg-gray-800 text-gray-300' : 'border-gray-50 hover:bg-gray-50 text-gray-700'}`}
+                                        >
+                                          <div className="font-bold flex items-center gap-2">
+                                            <span>{p.full_name || p.email}</span>
+                                            {p.global_role && (
+                                              <span className="text-[8px] px-1.5 py-0.5 rounded-md bg-indigo-500/10 text-indigo-500 uppercase tracking-widest">{p.global_role}</span>
+                                            )}
+                                          </div>
+                                          <div className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-2">
+                                            {p.email}
+                                          </div>
+                                        </button>
+                                      ))
+                                    }
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                           </div>
                         </div>
                       </div>
@@ -2467,9 +2586,20 @@ export default function App() {
                           <CheckSquare className="text-indigo-500" size={18} />
                           <h4 className={`text-sm font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Sub-Objectives</h4>
                         </div>
-                        <span className="text-[10px] font-bold text-indigo-500 bg-indigo-500/10 px-2 py-1 rounded-md">
-                          {formData.subtasks.length} Items
-                        </span>
+                        <div className="flex items-center gap-2">
+                          {formData.subtasks.some((s: any) => s.completed) && (
+                            <button
+                              type="button"
+                              onClick={() => setFormData(prev => ({ ...prev, subtasks: prev.subtasks.filter((s: any) => !s.completed) }))}
+                              className="text-[9px] font-bold text-red-500 hover:text-red-400 uppercase tracking-widest px-2 py-1 rounded-md bg-red-500/10 transition-colors"
+                            >
+                              Clear Checked
+                            </button>
+                          )}
+                          <span className="text-[10px] font-bold text-indigo-500 bg-indigo-500/10 px-2 py-1 rounded-md">
+                            {formData.subtasks.length} Items
+                          </span>
+                        </div>
                       </div>
 
                       <div className="space-y-3">
@@ -2549,14 +2679,71 @@ export default function App() {
                             <div className="p-6 space-y-6 border-x-2 border-b-2 border-gray-100 dark:border-gray-800 rounded-b-2xl">
                               <div className="grid grid-cols-2 gap-6">
                                 <div>
-                                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Dependencies (IDs)</label>
-                                  <input
-                                    type="text"
-                                    placeholder="e.g. 102, 105"
-                                    value={formData.dependencies?.join(', ') || ''}
-                                    onChange={e => setFormData(prev => ({ ...prev, dependencies: e.target.value.split(',').map(t => parseInt(t.trim())).filter(n => !isNaN(n)) }))}
-                                    className={`w-full ${isDarkMode ? 'bg-[#0A0A0B] border-gray-800 text-white' : 'bg-white border-gray-100'} border-2 rounded-xl px-4 py-3 text-sm`}
-                                  />
+                                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Dependencies (Search to add)</label>
+                                  <div className="flex flex-wrap gap-2 mb-3">
+                                    {(formData.dependencies || []).map((depId: number) => {
+                                      const depTask = tasks.find(t => t.id === depId);
+                                      return (
+                                        <div key={depId} className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[10px] font-bold text-indigo-400">
+                                          <span>{depTask?.title || `Task #${depId}`}</span>
+                                          <button 
+                                            type="button" 
+                                            onClick={() => setFormData(prev => ({ ...prev, dependencies: prev.dependencies?.filter((id: number) => id !== depId) }))}
+                                            className="hover:text-red-400"
+                                          >
+                                            <X size={10} />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  <div className="relative group">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-indigo-500 transition-colors" size={14} />
+                                    <input
+                                      type="text"
+                                      placeholder="Search tasks to link..."
+                                      value={depSearch}
+                                      onChange={e => setDepSearch(e.target.value)}
+                                      className={`w-full pl-10 pr-4 py-3 rounded-xl border-2 transition-all ${isDarkMode ? 'bg-[#0A0A0B] border-gray-800 text-white focus:border-indigo-500' : 'bg-white border-gray-100 focus:border-indigo-500'} text-xs`}
+                                    />
+                                    <AnimatePresence>
+                                      {depSearch && (
+                                        <motion.div 
+                                          initial={{ opacity: 0, y: 10 }}
+                                          animate={{ opacity: 1, y: 0 }}
+                                          exit={{ opacity: 0, y: 10 }}
+                                          className={`absolute top-full left-0 w-full mt-2 rounded-xl border-2 z-50 shadow-2xl overflow-hidden ${isDarkMode ? 'bg-[#0A0A0B] border-gray-800' : 'bg-white border-gray-100'}`}
+                                        >
+                                          <div className="max-h-[200px] overflow-y-auto custom-scrollbar">
+                                            {tasks
+                                              .filter(t => 
+                                                t.id !== editingTask?.id && 
+                                                !formData.dependencies?.includes(t.id) &&
+                                                (t.title.toLowerCase().includes(depSearch.toLowerCase()) || String(t.id).includes(depSearch))
+                                              )
+                                              .map(t => (
+                                                <button
+                                                  key={t.id}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setFormData(prev => ({ ...prev, dependencies: [...(prev.dependencies || []), t.id] }));
+                                                    setDepSearch('');
+                                                  }}
+                                                  className={`w-full text-left px-4 py-3 text-xs transition-colors border-b last:border-none ${isDarkMode ? 'border-gray-800 hover:bg-gray-800 text-gray-300' : 'border-gray-50 hover:bg-gray-50 text-gray-700'}`}
+                                                >
+                                                  <div className="font-bold mb-0.5">{t.title}</div>
+                                                  <div className="text-[10px] text-gray-500 uppercase tracking-widest font-black">ID: {t.id} • {t.status}</div>
+                                                </button>
+                                              ))
+                                            }
+                                            {tasks.filter(t => t.id !== editingTask?.id && !formData.dependencies?.includes(t.id) && (t.title.toLowerCase().includes(depSearch.toLowerCase()) || String(t.id).includes(depSearch))).length === 0 && (
+                                              <div className="px-4 py-8 text-xs text-gray-500 text-center italic">No matching objectives found</div>
+                                            )}
+                                          </div>
+                                        </motion.div>
+                                      )}
+                                    </AnimatePresence>
+                                  </div>
                                 </div>
                                 <div>
                                   <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Budget ($)</label>

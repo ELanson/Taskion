@@ -280,93 +280,85 @@ export const useEnvironmentalData = () => {
                 };
 
                 const fetchRealWorldData = async () => {
-                    const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY;
-                    const WEATHER_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
                     let realTraffic: TrafficData | null = null;
                     let realWeather: Partial<WeatherData> | null = null;
                     let floodInsight: any = null;
 
                     try {
-                        // 1. Fetch OpenWeatherMap Data
-                        if (WEATHER_KEY && WEATHER_KEY !== 'your_openweather_api_key_here') {
-                            const [lat, lon] = targetCoords;
-                            const weatherRes = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${WEATHER_KEY}`);
-                            const forecastRes = await fetch(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=metric&cnt=8&appid=${WEATHER_KEY}`);
-                            
-                            if (weatherRes.ok && forecastRes.ok) {
-                                const wData = await weatherRes.json();
-                                const fData = await forecastRes.json();
-                                
-                                const conditionMap: Record<string, 'sun' | 'cloud' | 'rain' | 'storm'> = {
-                                    'Clear': 'sun',
-                                    'Clouds': 'cloud',
-                                    'Rain': 'rain',
-                                    'Drizzle': 'rain',
-                                    'Thunderstorm': 'storm',
-                                    'Snow': 'cloud',
-                                    'Mist': 'cloud',
-                                    'Smoke': 'cloud',
-                                    'Haze': 'cloud',
-                                    'Dust': 'cloud',
-                                    'Fog': 'cloud',
-                                    'Sand': 'cloud',
-                                    'Ash': 'cloud',
-                                    'Squall': 'storm',
-                                    'Tornado': 'storm'
-                                };
+                        const [lat, lon] = targetCoords;
 
-                                realWeather = {
-                                    temp: Math.round(wData.main.temp),
-                                    condition: wData.weather[0].main,
-                                    humidity: wData.main.humidity,
-                                    windSpeed: Math.round(wData.wind.speed * 3.6), // m/s to km/h
-                                    rainChance: wData.rain ? 80 : (wData.clouds.all > 70 ? 40 : 10),
-                                    location: wData.name,
-                                    hourly: fData.list.map((item: any) => ({
-                                        time: new Date(item.dt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                                        temp: Math.round(item.main.temp),
-                                        icon: conditionMap[item.weather[0].main] || 'cloud'
-                                    }))
-                                };
+                        // 1. Fetch Weather through proxy
+                        const weatherRes = await fetch(`/api/weather?lat=${lat}&lon=${lon}`);
+                        if (weatherRes.ok) {
+                            const { weather: wData, forecast: fData } = await weatherRes.json();
+                            
+                            const conditionMap: Record<string, 'sun' | 'cloud' | 'rain' | 'storm'> = {
+                                'Clear': 'sun',
+                                'Clouds': 'cloud',
+                                'Rain': 'rain',
+                                'Drizzle': 'rain',
+                                'Thunderstorm': 'storm',
+                                'Snow': 'cloud',
+                                'Mist': 'cloud',
+                                'Smoke': 'cloud',
+                                'Haze': 'cloud',
+                                'Dust': 'cloud',
+                                'Fog': 'cloud',
+                                'Sand': 'cloud',
+                                'Ash': 'cloud',
+                                'Squall': 'storm',
+                                'Tornado': 'storm'
+                            };
+
+                            realWeather = {
+                                temp: Math.round(wData.main.temp),
+                                condition: wData.weather[0].main,
+                                humidity: wData.main.humidity,
+                                windSpeed: Math.round(wData.wind.speed * 3.6), // m/s to km/h
+                                rainChance: wData.rain ? 80 : (wData.clouds.all > 70 ? 40 : 10),
+                                location: wData.name,
+                                hourly: fData.list.map((item: any) => ({
+                                    time: new Date(item.dt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                                    temp: Math.round(item.main.temp),
+                                    icon: conditionMap[item.weather[0].main] || 'cloud'
+                                }))
+                            };
+                        } else {
+                            const errData = await weatherRes.json().catch(() => ({}));
+                            if (weatherRes.status === 401) {
+                                toast.warning('Weather Activation Pending', {
+                                    description: 'Service provider key is invalid or not yet active. Using internal simulation engine.'
+                                });
                             } else {
-                                if (weatherRes.status === 401 || forecastRes.status === 401) {
-                                    toast.warning('Weather Activation Pending', {
-                                        description: 'OpenWeatherMap key is invalid or not yet active. Using internal simulation engine.'
-                                    });
-                                } else {
-                                    toast.error('Weather Sync Error', {
-                                        description: `Live weather services responded with status ${weatherRes.status}. Using high-fidelity fallback.`
-                                    });
-                                }
+                                toast.error('Weather Sync Error', {
+                                    description: `Internal server error ${weatherRes.status}: ${errData.error || 'Check server logs.'}`
+                                });
                             }
                         }
 
-                        // 2. Fetch TomTom Traffic Incidents
-                        if (TOMTOM_KEY && TOMTOM_KEY !== 'your_tomtom_api_key_here') {
-                            const [lat, lon] = targetCoords;
-                            const offset = 0.1; // ~10km bounding box
-                            const bbox = `${lon - offset},${lat - offset},${lon + offset},${lat + offset}`;
-                            const incidentRes = await fetch(`https://api.tomtom.com/traffic/services/4/incidentDetails/s3/${bbox}/10/-1/json?key=${TOMTOM_KEY}`);
-                            
-                            if (incidentRes.ok) {
-                                const data = await incidentRes.json();
-                                const incidents = data.tm?.poi?.map((p: any) => p.d) || [];
-                                const impactAreas = data.tm?.poi?.map((p: any) => ({
-                                    center: [p.p.y, p.p.x],
-                                    color: p.ic === 1 ? '#ef4444' : '#f59e0b',
-                                    label: p.d
-                                })) || [];
+                        // 2. Fetch Traffic through proxy
+                        const trafficRes = await fetch(`/api/traffic?lat=${lat}&lon=${lon}`);
+                        if (trafficRes.ok) {
+                            const data = await trafficRes.json();
+                            const incidents = data.tm?.poi?.map((p: any) => p.d) || [];
+                            const impactAreas = data.tm?.poi?.map((p: any) => ({
+                                center: [p.p.y, p.p.x],
+                                color: p.ic === 1 ? '#ef4444' : '#f59e0b',
+                                label: p.d
+                            })) || [];
 
-                                realTraffic = {
-                                    status: incidents.length > 5 ? 'Heavy' : (incidents.length > 0 ? 'Moderate' : 'Clear'),
-                                    currentTravelTime: 16 + (incidents.length * 2),
-                                    normalTravelTime: 16,
-                                    incidents: incidents.slice(0, 5),
-                                    route: locationName.split(',')[0] + ' Corridors',
-                                    impactAreas: impactAreas.slice(0, 10),
-                                    delayReason: incidents.length > 0 ? `${incidents.length} incidents detected in your area.` : 'Traffic is flowing smoothly.'
-                                };
-                            }
+                            realTraffic = {
+                                status: incidents.length > 5 ? 'Heavy' : (incidents.length > 0 ? 'Moderate' : 'Clear'),
+                                currentTravelTime: 16 + (incidents.length * 2),
+                                normalTravelTime: 16,
+                                incidents: incidents.slice(0, 5),
+                                route: locationName.split(',')[0] + ' Corridors',
+                                impactAreas: impactAreas.slice(0, 10),
+                                delayReason: incidents.length > 0 ? `${incidents.length} incidents detected in your area.` : 'Traffic is flowing smoothly.'
+                            };
+                        } else {
+                            const errData = await trafficRes.json().catch(() => ({}));
+                            console.warn('Traffic proxy failed:', trafficRes.status, errData.error);
                         }
 
                         // 2. Fetch Open-Meteo Flood Risk
