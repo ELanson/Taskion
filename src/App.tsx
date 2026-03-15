@@ -61,6 +61,7 @@ import {
   Layout
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Toaster, toast } from 'sonner';
 
 import { useAppStore, Task, Project, Message, AppNotification } from './store/useAppStore';
 import { supabase } from './lib/supabase';
@@ -88,7 +89,6 @@ import { ChatHistoryDrawer } from './components/ChatHistoryDrawer';
 import { FocusModeModal } from './components/FocusModeModal';
 import { EisenhowerMatrix } from './components/EisenhowerMatrix';
 import { PlannerView } from './components/PlannerView';
-import { NotificationToast } from './components/NotificationToast';
 import { NotificationBell } from './components/NotificationBell';
 import { NotificationModal } from './components/NotificationModal';
 import {
@@ -98,6 +98,7 @@ import {
 import { WorkflowModule } from './components/WorkflowModule';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { FBoardCanvas } from './components/fboard-canvas/FBoardCanvas';
 
 export default function App() {
   const {
@@ -392,31 +393,19 @@ export default function App() {
   }, [initializeAuth]);
 
   useEffect(() => {
-    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+    window.addEventListener('unhandledrejection', (event) => {
       console.error('Unhandled Promise Rejection:', event.reason);
-      addNotification({
-        type: 'error',
-        title: 'Background Failure',
-        body: `Async Failure: **${event.reason?.message || 'Unknown background error'}**`
+      toast.error('Background Failure', {
+        description: event.reason?.message || 'Unknown background error'
       });
-    };
+    });
 
-    const handleGlobalError = (event: ErrorEvent) => {
+    window.addEventListener('error', (event) => {
       console.error('Global Error:', event.error);
-      addNotification({
-        type: 'error',
-        title: 'Runtime Error',
-        body: `Application Error: **${event.message}**`
+      toast.error('Runtime Error', {
+        description: event.message
       });
-    };
-
-    window.addEventListener('unhandledrejection', handleUnhandledRejection);
-    window.addEventListener('error', handleGlobalError);
-
-    return () => {
-      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
-      window.removeEventListener('error', handleGlobalError);
-    };
+    });
   }, [addNotification]);
 
   // Continuously sync main AI Chat History to cloud DB
@@ -442,17 +431,13 @@ export default function App() {
     if (!inviteEmail) return;
     const { error } = await inviteUser(inviteEmail);
     if (!error) {
-      addNotification({
-        type: 'success',
-        title: 'Invitation Sent',
-        body: 'A Magic Link has been successfully sent to the recipient.'
+      toast.success('Invitation Sent', {
+        description: 'A Magic Link has been successfully sent to the recipient.'
       });
       setInviteEmail('');
     } else {
-      addNotification({
-        type: 'error',
-        title: 'Invitation Failed',
-        body: `System error: **${error.message}**`
+      toast.error('Invitation Failed', {
+        description: error.message
       });
     }
   };
@@ -581,17 +566,13 @@ export default function App() {
       const { error } = await broadcastNotification(broadcastFormData);
 
       if (!error) {
-        addNotification({
-          type: 'success',
-          title: 'Broadcast Sent',
-          body: 'Your message has been synchronized across all active nexus nodes.'
+        toast.success('Broadcast Sent', {
+          description: 'Your message has been synchronized across all active nexus nodes.'
         });
         setBroadcastFormData({ title: '', body: '', type: 'info' });
       } else {
-        addNotification({
-          type: 'error',
-          title: 'Broadcast Failed',
-          body: `System error: **${error.message || error}**`
+        toast.error('Broadcast Failed', {
+          description: error.message || String(error)
         });
       }
     } catch (error) {
@@ -626,10 +607,8 @@ export default function App() {
   const handleSaveTask = async (e: React.FormEvent, addAnother = false) => {
     e.preventDefault();
     if (formData.project_id === 0) {
-      addNotification({
-        type: 'warning',
-        title: 'Project Selection Required',
-        body: 'Please select a project to associate this task with.'
+      toast.warning('Project Selection Required', {
+        description: 'Please select a project to associate this task with.'
       });
       return;
     }
@@ -659,12 +638,11 @@ export default function App() {
         } else {
           setFormData(prev => ({ ...prev, title: '', description: '', subtasks: [] }));
         }
+        toast.success(editingTask ? 'Task Updated' : 'Task Created');
         fetchData();
       } else {
-        addNotification({
-          type: 'error',
-          title: 'Task Save Failed',
-          body: `Supabase error: **${res.error.message}**`
+        toast.error('Task Save Failed', {
+          description: res.error.message
         });
       }
     } catch (error) {
@@ -685,10 +663,8 @@ export default function App() {
   const handleSaveProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!projectFormData.name.trim()) {
-      addNotification({
-        type: 'warning',
-        title: 'Name Required',
-        body: 'Every project needs a descriptive name to be identified.'
+      toast.warning('Name Required', {
+        description: 'Every project needs a descriptive name to be identified.'
       });
       return;
     }
@@ -703,12 +679,11 @@ export default function App() {
 
       if (!res.error) {
         setIsProjectModalOpen(false);
+        toast.success(editingProject ? 'Project Updated' : 'Project Created');
         fetchData();
       } else {
-        addNotification({
-          type: 'error',
-          title: 'Project Save Failed',
-          body: `Supabase error: **${res.error.message}**`
+        toast.error('Project Save Failed', {
+          description: res.error.message
         });
       }
     } catch (error) {
@@ -730,10 +705,8 @@ export default function App() {
   const handleSaveTimeLog = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaskIdForTimeLog || timeLogFormData.hours <= 0) {
-      addNotification({
-        type: 'warning',
-        title: 'Invalid Entry',
-        body: 'Please enter a positive number of hours to log time.'
+      toast.warning('Invalid Entry', {
+        description: 'Please enter a positive number of hours to log time.'
       });
       return;
     }
@@ -749,13 +722,12 @@ export default function App() {
       if (!res.error) {
         setIsTimeLogModalOpen(false);
         setIsRefreshing(true);
+        toast.success('Time Logged Successfully');
         await fetchData();
         setTimeout(() => setIsRefreshing(false), 1000);
       } else {
-        addNotification({
-          type: 'error',
-          title: 'Time Log Failed',
-          body: `Supabase error: **${res.error.message}**`
+        toast.error('Time Log Failed', {
+          description: res.error.message
         });
       }
     } catch (error) {
@@ -1069,85 +1041,6 @@ export default function App() {
     return 'text-indigo-500 bg-indigo-500/10';
   };
 
-const FBoard = () => {
-  const { isDarkMode } = useAppStore();
-  const productions = [
-    { id: 'p1', name: 'Summer Campaign 2025', boards: 12, status: 'Active', updated: '2h ago' },
-    { id: 'p2', name: 'Social Media Assets Q2', boards: 45, status: 'Exported', updated: '1d ago' },
-    { id: 'p3', name: 'Product Launch Video', boards: 8, status: 'Draft', updated: '3d ago' },
-  ];
-
-  return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="max-w-5xl mx-auto space-y-8">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className={`text-2xl font-black mb-1 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>FBoard Production Hub</h2>
-            <p className="text-gray-500 text-sm font-medium">Manage and track your board productions and assets</p>
-          </div>
-          <button className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-black text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-900/30">
-            <Plus size={16} /> New Production
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[
-            { label: 'Total Boards', value: '65', icon: Table, color: 'emerald', bg: 'bg-emerald-500/10' },
-            { label: 'Active Productions', value: '3', icon: Activity, color: 'indigo', bg: 'bg-indigo-500/10' },
-            { label: 'Exported Assets', value: '128', icon: Download, color: 'amber', bg: 'bg-amber-500/10' },
-          ].map(stat => (
-            <div key={stat.label} className={`p-6 rounded-3xl border ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100 shadow-sm'}`}>
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-xs font-black text-gray-500 uppercase tracking-widest">{stat.label}</p>
-                <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${stat.bg}`}>
-                  <stat.icon size={16} className={`text-${stat.color}-500`} />
-                </div>
-              </div>
-              <p className={`text-3xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{stat.value}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className={`rounded-3xl border overflow-hidden ${isDarkMode ? 'bg-[#121214] border-gray-800' : 'bg-white border-gray-100 shadow-sm'}`}>
-          <div className="px-6 py-4 border-b border-gray-800/50 flex items-center justify-between">
-            <h3 className={`text-sm font-black uppercase tracking-widest ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Recent Productions</h3>
-            <button className="text-xs text-indigo-400 font-bold hover:underline">View All</button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className={`border-b ${isDarkMode ? 'border-gray-800/50' : 'border-gray-100'}`}>
-                  <th className="px-6 py-4 text-[10px] font-black text-gray-500 uppercase tracking-widest">Name</th>
-                  <th className="px-6 py-4 text-[10px] font-black text-gray-500 uppercase tracking-widest">Boards</th>
-                  <th className="px-6 py-4 text-[10px] font-black text-gray-500 uppercase tracking-widest">Status</th>
-                  <th className="px-6 py-4 text-[10px] font-black text-gray-500 uppercase tracking-widest">Last Updated</th>
-                </tr>
-              </thead>
-              <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800/10' : 'divide-gray-100'}`}>
-                {productions.map(p => (
-                  <tr key={p.id} className={`hover:bg-gray-800/20 transition-colors cursor-pointer`}>
-                    <td className="px-6 py-4 text-sm font-bold">{p.name}</td>
-                    <td className="px-6 py-4 text-xs font-bold text-gray-500">{p.boards}</td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded-full text-[9px] font-black uppercase ${
-                        p.status === 'Active' ? 'bg-emerald-500/10 text-emerald-400' : 
-                        p.status === 'Exported' ? 'bg-indigo-500/10 text-indigo-400' : 
-                        'bg-amber-500/10 text-amber-400'
-                      }`}>
-                        {p.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-xs text-gray-600 font-medium">{p.updated}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
 
   if (!user) {
     return <Auth />;
@@ -1155,7 +1048,6 @@ const FBoard = () => {
 
   return (
     <div className={`flex h-screen ${isDarkMode ? 'dark bg-[#0A0A0B] text-gray-100' : 'bg-[#F8F9FA] text-[#1A1A1A]'} font-sans overflow-hidden transition-colors duration-300`}>
-      <NotificationToast />
       <NotificationModal /> {/* Render NotificationModal here */}
 
       {/* Team Modal */}
@@ -1240,7 +1132,7 @@ const FBoard = () => {
 
       {activeTab === 'leads' && <TeakelDashboard />}
       {activeTab === 'workflow' && <WorkflowModule />}
-      {activeTab === 'fboard' && <FBoard />}
+      {activeTab === 'fboard' && <FBoardCanvas />}
 
       <div className={`flex w-full h-full bg-inherit ${(activeTab === 'leads' || activeTab === 'workflow' || activeTab === 'fboard') ? 'hidden' : ''}`}>
         {/* Sidebar */}
@@ -1361,10 +1253,13 @@ const FBoard = () => {
 
             <button
               onClick={() => { setActiveTab('workflow'); setIsNavOpen(false); }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'workflow' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all ${activeTab === 'workflow' ? (isDarkMode ? 'bg-[#1a1c1d] text-white' : 'bg-gray-900 text-white') : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100')}`}
             >
-              <Layers size={18} />
-              <span className="font-medium text-sm">Workflow</span>
+              <div className="flex items-center gap-3">
+                <Layers size={18} />
+                <span className="font-medium text-sm">Workflow</span>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold">New</span>
             </button>
 
             <button
@@ -3276,6 +3171,7 @@ const FBoard = () => {
         {/* Global Modals */}
         <ReportBuilderModal />
         <ReportViewer />
+        <Toaster position="top-right" richColors expand visibleToasts={6} />
         <AnimatePresence>
           {isFocusModeOpen && <FocusModeModal onClose={() => setIsFocusModeOpen(false)} />}
         </AnimatePresence>

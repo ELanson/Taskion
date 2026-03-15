@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');
 @plugin "@tailwindcss/typography";
 
 @keyframes map-pulse {
@@ -22,4 +23,47 @@
     animation: map-pulse 2s ease-out infinite;
     transform-box: fill-box;
     transform-origin: center;
+}
+
+/* Premium Leaflet Popups */
+.traffic-flow-popup .leaflet-popup-content-wrapper {
+    background: rgba(255, 255, 255, 0.9) !important;
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 16px;
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+}
+
+.traffic-flow-popup.dark-popup .leaflet-popup-content-wrapper {
+    background: rgba(26, 28, 30, 0.85) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.traffic-flow-popup .leaflet-popup-content {
+    margin: 12px;
+}
+
+.traffic-flow-popup .leaflet-popup-tip {
+    background: white !important;
+}
+
+.traffic-flow-popup.dark-popup .leaflet-popup-tip {
+    background: rgba(26, 28, 30, 0.85) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Interactive Cursor */
+.force-pointer {
+    cursor: pointer !important;
+}
+
+.leaflet-container {
+    cursor: default !important;
+}
+
+.leaflet-clickable, .leaflet-marker-icon, .leaflet-interactive {
+    cursor: pointer !important;
 }
