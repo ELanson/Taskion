@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
-import path from 'path';
+import path, { join } from 'path';
 import { VertexAI } from '@google-cloud/vertexai';
 // Import server-side file cache from upload-file handler
 // (works because both run in the same Node.js process in dev + serverless)
@@ -227,13 +227,14 @@ const toolDeclarations = [
     }
 ];
 
-const LOG_FILE = 'C:/Users/erick/.gemini/antigravity/brain/de1683c4-3228-415c-81c4-f1102d5e8d97/debug_api.log';
+const LOG_FILE = join(process.cwd(), 'api_debug.log');
 function fileLog(msg: string) {
+    if (process.env.VERCEL) return; // Disable file logging on Vercel
     const time = new Date().toISOString();
     try {
         fs.appendFileSync(LOG_FILE, `[${time}] ${msg}\n`);
     } catch (e) {
-        console.error("Failed to write to debug_api.log:", e);
+        // Silently fail if log file is not writable
     }
 }
 
@@ -276,7 +277,7 @@ export default async function handler(req: any, res: any) {
 
         // Determine model from workspace settings
         const { data: settings } = await supabase.from('workspace_settings').select('cloud_ai_model').limit(1).single();
-        const targetModel = settings?.cloud_ai_model || 'gemini-2.5-pro';
+        const targetModel = settings?.cloud_ai_model || 'gemini-1.5-pro';
         fileLog(`[API] Model: ${targetModel}`);
 
         // Build conversation contents
